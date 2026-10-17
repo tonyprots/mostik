@@ -32,27 +32,27 @@ def _root_stat(_path):
 
 
 def test_git_executable_accepts_only_system_developer_dirs():
-    exists = {f"{CLT}/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git"}
+    exists = {f"{CLT}/usr/bin/git", "/Applications/Xcode-Fixture.app/Contents/Developer/usr/bin/git"}
     # Ф-1: владелец проверяется отдельно (test_git_executable_requires_root_chain), здесь — только форма пути.
     git_executable = functools.partial(pg.git_executable, lstat=_root_stat)
     assert git_executable(CLT, exists.__contains__) == f"{CLT}/usr/bin/git"
     assert git_executable(CLT + "/\n", exists.__contains__) == f"{CLT}/usr/bin/git", "хвост вывода xcode-select"
-    assert git_executable("/Applications/Xcode.app/Contents/Developer", exists.__contains__) \
-        == "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+    assert git_executable("/Applications/Xcode-Fixture.app/Contents/Developer", exists.__contains__) \
+        == "/Applications/Xcode-Fixture.app/Contents/Developer/usr/bin/git"
     for bad in ("/tmp/evil", "/Users/a/Library/Developer/CommandLineTools", "/Applications/../tmp/x.app/Contents/Developer",
-                "/Applications/Xcode.app/Contents/Developer/../../../../tmp", "CommandLineTools", "", "/", None):
+                "/Applications/Xcode-Fixture.app/Contents/Developer/../../../../tmp", "CommandLineTools", "", "/", None):
         assert git_executable(bad, lambda _: True) is None, bad
     assert git_executable(CLT, lambda _: False) is None, "файла нет — без git, обход папки"
 
 
 # --- Ф-1 (хвост р5): git только из цепочки, которая целиком принадлежит root -----------------------------
 
-XCODE_DEV = "/Applications/Xcode.app/Contents/Developer"
+XCODE_DEV = "/Applications/Xcode-Fixture.app/Contents/Developer"
 
 
 @pytest.fixture
 def fake_applications(tmp_path):
-    """Временная папка пользователя в роли корня: `<tmp>/Applications/Xcode.app/…/usr/bin/git`."""
+    """Временная папка пользователя в роли корня: `<tmp>/Applications/Xcode-Fixture.app/…/usr/bin/git`."""
     bin_dir = tmp_path / XCODE_DEV.lstrip("/") / "usr" / "bin"
     bin_dir.mkdir(parents=True)
     git = bin_dir / "git"
@@ -79,7 +79,7 @@ def test_git_executable_requires_root_chain(fake_applications):
     exists = lambda p: os.access(str(base) + p, os.X_OK)  # noqa: E731
     assert pg.git_executable(XCODE_DEV, exists, lstat=_mapped(base)) is None, "Xcode пользователя (uid ≠ 0) — без git"
     assert pg.git_executable(XCODE_DEV, exists, lstat=_as_root(base)) == XCODE_DEV + "/usr/bin/git", "цепочка root"
-    for link, mode in (("/Applications/Xcode.app", 0o775), ("/Applications/Xcode.app/Contents", 0o757),
+    for link, mode in (("/Applications/Xcode-Fixture.app", 0o775), ("/Applications/Xcode-Fixture.app/Contents", 0o757),
                        (XCODE_DEV, 0o775), (XCODE_DEV + "/usr/bin", 0o777), (XCODE_DEV + "/usr/bin/git", 0o775)):
         target = Path(str(base) + link)
         target.chmod(mode)
@@ -112,7 +112,7 @@ def test_git_trust_chain_starts_at_app_bundle_or_clt():
             return SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o775)
         return _root_stat(path)
     assert pg.git_executable(XCODE_DEV, lambda _: True, lstat=lstat) == XCODE_DEV + "/usr/bin/git"
-    assert seen == ["/Applications/Xcode.app", "/Applications/Xcode.app/Contents", XCODE_DEV, XCODE_DEV + "/usr",
+    assert seen == ["/Applications/Xcode-Fixture.app", "/Applications/Xcode-Fixture.app/Contents", XCODE_DEV, XCODE_DEV + "/usr",
                     XCODE_DEV + "/usr/bin", XCODE_DEV + "/usr/bin/git"], "/Applications (root:admin 775) не в цепочке"
     seen.clear()
     pg.git_executable(CLT, lambda _: True, lstat=lstat)
