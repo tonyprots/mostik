@@ -1,0 +1,9 @@
+# Зависимости движка Mostik по фактическим импортам (engine/mostik_engine).
+# Версии — те, на которых движок проверен (venv transcriber). Пакет audio_transcription —
+# копия в engine/vendor_transcriber (SOURCE.md там же), не из PyPI.
+numpy>=2.0,<3
+PyYAML>=6,<7
+# ASR (GigaAM, Parakeet, Silero VAD) и загрузка весов из кэша Hugging Face
+onnx-asr[cpu,hub]>=0.12,<0.13
+onnxruntime>=1.20
+huggingface_hub>=1.0

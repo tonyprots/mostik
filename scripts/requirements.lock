@@ -1,0 +1,33 @@
+# Пакеты встроенного Python Mostik: точная версия и SHA256 файла RECORD дистрибутива.
+# Собрано `scripts/vendor_python.py lock` из установленных venv, без сети. Каждый файл пакета
+# сверяется с RECORD, RECORD — с этой строкой. Хэшей колёс (pip --hash) здесь нет: офлайн их
+# не получить — см. docs/packaging.md, «Цепочка поставки».
+numpy==2.5.2  # record-sha256=04aab619304458509be6e42d51b85efc1734124deb826a851c56c2ea5efe2c4a
+onnx_asr==0.12.0  # record-sha256=c4d1f877d232c934219d4265c1441357e48538aa12d7e6895348213e99bae664
+onnxruntime==1.29.0  # record-sha256=79020acd40a3a541d3c5b76fe83fee13c76fbf533707657b227af6f2a2c138bd
+mlx==0.32.2  # record-sha256=c64c3c7df4909aefcb2b12e28d53330479c96c58f7403e13410d84f88af87419
+mlx_metal==0.32.2  # record-sha256=ab64c646d37dc5f66e65341b9e0f34739140df42050d7f9f037290cf358654f9
+mlx_audio==0.5.1  # record-sha256=098c3510c93e4c1333e29a54db61807ca31a9c92e329b6b24dd412c3424e6fc4
+huggingface_hub==1.29.0  # record-sha256=5d458a706562b22b76bf83412ea499785b66154b72fa6367d5e3a7fac2306dee
+transformers==5.16.1  # record-sha256=38aefe6a5fe293fa4a428808ee5c1486ad25592c94c969b12c2631d60271d686
+tokenizers==0.23.1  # record-sha256=0edaa23d899696576737c152a604fe2e1a9d06458a51aacd4cd0c5d2a6dd3024
+safetensors==0.8.0  # record-sha256=37892273508b92e90021b732228dde0de62a32f21805209886c86f510ee40152
+regex==2026.9.3  # record-sha256=1b59b08df8dbf2c2ad247424805e351766958f622155db90030ea86c86ac553e
+tqdm==4.70.0  # record-sha256=9d8b41dcdfa2ce6c1659fbc0b694d1216eb2e42c5d7397c4175706f583911bbc
+filelock==3.32.4  # record-sha256=27fd7dd3775a1232610d1cc111203b84a7769bd8c5652cf1cb91c58fe322c770
+packaging==26.3  # record-sha256=fb96d1369585ab87d62ad98728c89d2e67274ad060f012c85e358ba17ca92577
+pyyaml==6.0.3  # record-sha256=b6cc865dd12a54367bded9629a54bd78d0fc3debcd6fad5320c28cabb14d5a68
+typing_extensions==4.16.0  # record-sha256=d9c7c4c2b4b297c98f532b40a1f736672ca210e7bc59beefc2736c6849cbf59c
+httpx==0.28.1  # record-sha256=9f5b9d1c855b3690fc12c6ea643b1375b4ab42710ff76ed452cc4ebd6835d285
+httpcore==1.0.9  # record-sha256=63deb33ed95fd1f97a147c82d39f9c2a7ecf644d1e003560e91079f0c50a5f3b
+h11==0.16.0  # record-sha256=5a4f60650b70bb24d89c5a74f5251971a9abe50b5ef826a2b6704a6e2c070af2
+anyio==4.14.2  # record-sha256=efd1f7f6dbddedf38c39e7b0261fcba825e9d169de7f2d5ff1df01eb09bc4c26
+idna==3.19  # record-sha256=7c8fb992d3b0142cada5f2223574946fbc4a14df35d78d8c68f98f5f507a9ab7
+certifi==2026.7.22  # record-sha256=af83dd01b9ffee2313bed846542fd20dfcaeb01506844489dbd02c59ba649055
+rich==15.0.0  # record-sha256=f72119f673e3b306f8d0ea70d481aebcc742ffb25da397a790b8c605268506d0
+pygments==2.21.0  # record-sha256=855e6ebbdb71f5af0e0a863a8646f154924e3d61ac1830cededc6284e9eb2acd
+click==8.5.0  # record-sha256=20955ac987165f25287f4c143219480b49d4dec92a22cf5027341049dc9c0117
+mlx_lm==0.32.0  # record-sha256=339ab286b037497259f7d502826d63d585bbbf9c61f1620647b2e29bab53aa3c
+jinja2==3.1.6  # record-sha256=4ddffbd80fa3bc35f998f1f6b304de059fd9feaa7df1c3e7fbd25d021f0e2b6d
+markupsafe==3.0.4  # record-sha256=a7df2a1abfb8db937f7360f0885f9bf465a1c20dc48aa09948c4b7831dc0d713
+sentencepiece==0.2.2  # record-sha256=44a734f88bac86e3beef5348dd0f2ef0a6cbed0b5d8f0a4e58838a9770a03929

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mostik.app/schemas/meeting-frontmatter.schema.json",
+  "title": "Mostik: YAML-шапка meeting.md",
+  "description": "Шапка между строками --- в начале meeting.md. Генерируется из manifest.json и notes.json; правку человека приложение сохраняет рядом как meeting.edited-<время>.md.",
+  "type": "object",
+  "required": ["title", "started", "attendees", "action_items", "decisions", "sensitive"],
+  "properties": {
+    "id": {"type": "string"},
+    "title": {"type": "string"},
+    "started": {"type": ["string", "null"]},
+    "ended": {"type": ["string", "null"]},
+    "duration_seconds": {"type": ["number", "null"]},
+    "attendees": {"type": "array", "items": {"type": "string"}},
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["assignee", "task", "due"],
+        "properties": {
+          "assignee": {"type": ["string", "null"], "description": "Метка говорящего («Я», «Собеседник 1», имя из календаря) или «группа»; null — не прозвучал."},
+          "task": {"type": "string"},
+          "due": {"type": ["string", "null"], "description": "Срок как прозвучал («до пятницы») или дата."}
+        }
+      }
+    },
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "sensitive": {"type": "boolean"}
+  }
+}

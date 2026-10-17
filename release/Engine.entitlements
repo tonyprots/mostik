@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Встроенный Python под hardened runtime: ctypes и libffi пишут исполняемые трамплины в память. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!-- Все .so и .dylib в бандле подписаны тем же Developer ID. Исключение — на библиотеки, которые
+	     пакеты распаковывают или собирают во время работы (временные .so, кэши JIT): их подписать заранее
+	     нельзя. Только для процесса Python, не для приложения. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

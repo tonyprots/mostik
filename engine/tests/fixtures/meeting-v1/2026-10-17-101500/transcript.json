@@ -1,0 +1,10 @@
+{
+  "schema": "mostik.transcript",
+  "version": 1,
+  "language": "ru",
+  "duration_seconds": 1812.4,
+  "turns": [
+    {"speaker": "Алекс Пример", "start": 0.0, "end": 4.2, "text": "Начнём с выпуска ноль один ноль."},
+    {"speaker": "Сэм Образец", "start": 4.5, "end": 9.0, "text": "Лента обновлений готова, сертификат ждём."}
+  ]
+}

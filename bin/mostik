@@ -1,0 +1,51 @@
+#!/bin/bash
+# mostik — CLI Mostik для агентов (G1): история, встречи, словарь, поиск, MCP, хук.
+# Работает и из репозитория (bin/mostik), и из приложения
+# (Mostik.app/Contents/Resources/bin/mostik), и через симлинк в PATH.
+# Python: в .app — только встроенный (с -I); из репозитория — $MOSTIK_PYTHON → enginePython из settings.json →
+# vendor/python → venv transcriber рядом.
+set -euo pipefail
+
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+done
+here="$(cd -P "$(dirname "$self")" && pwd)"
+
+# Внутри .app (П10, низкий): только встроенный Python и движок из бандла, с -I — без
+# MOSTIK_PYTHON, enginePython, MOSTIK_ENGINE_DIR, PYTHONPATH и пользовательского site.
+# Путь к движку при -I идёт аргументом в загрузчик, как у приложения (EngineLaunch).
+if [ -x "$here/../python/bin/python3" ] && [ -d "$here/../engine/mostik_engine" ]; then
+  exec "$here/../python/bin/python3" -I -c \
+    "import sys, runpy; d, m = sys.argv[1], sys.argv[2]; del sys.argv[1:3]; sys.path.insert(0, d); runpy.run_module(m, run_name='__main__', alter_sys=True)" \
+    "$here/../engine" mostik_engine.cli "$@"
+fi
+
+engine="${MOSTIK_ENGINE_DIR:-$here/../engine}"
+
+home="${MOSTIK_HOME:-$HOME/Library/Application Support/Mostik}"
+python="${MOSTIK_PYTHON:-}"
+if [ -z "$python" ] && [ -f "$home/settings.json" ]; then
+  python="$(/usr/bin/plutil -extract enginePython raw -o - "$home/settings.json" 2>/dev/null || true)"
+  python="${python/#\~/$HOME}"
+fi
+case "$python" in */transcriber/.venv/bin/python) python="" ;; esac  # умолчание ранних сборок
+# Встроенный в .app → vendor/python репозитория → engine/.venv (разработка) → python3.
+for candidate in "$python" "$here/../python/bin/python3" "$here/../vendor/python/bin/python3" \
+                 "$here/../engine/.venv/bin/python"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then python="$candidate"; break; fi
+  python=""
+done
+if [ -z "$python" ]; then
+  python="$(command -v python3 || true)"
+fi
+if [ -z "$python" ]; then
+  printf '%s\n' '{"ok": false, "error": {"code": "internal", "message": "не найден Python для движка Mostik", "fix": "MOSTIK_PYTHON=/путь/к/python mostik spec"}, "meta": {"schemaVersion": 1}}'
+  exit 1
+fi
+
+export PYTHONPATH="$engine${PYTHONPATH:+:$PYTHONPATH}"
+# -P: рабочая папка агента не попадает в sys.path (её json.py не подменит модуль).
+exec "$python" -P -m mostik_engine.cli "$@"

@@ -1,0 +1,34 @@
+{
+ "_comment": "Закреплённые архивы встроенного Python и Sparkle (П10, С9) и готовый fluidaudiocli. Сверяют scripts/vendor_python.py extract/verify/fluidaudio, scripts/release.sh, scripts/bundle.sh и scripts/sign-app.sh. Новая версия — новые имя и полная сумма здесь, отдельным коммитом, после ручной проверки подлинности (docs/packaging.md, «Цепочка поставки»).",
+ "python": {
+  "version": "3.14.7",
+  "archive": "cpython-3.14.7+20260929-aarch64-apple-darwin-install_only.tar.gz",
+  "sha256": "0211ccf04c5e0a0feb0b9bf1148030e1f6a31b8eae624f13919a7752a4e3dc79",
+  "source": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+ },
+ "sparkle": {
+  "version": "2.10.0",
+  "archive": "Sparkle-2.10.0.tar.xz",
+  "sha256": "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c",
+  "source": "https://github.com/sparkle-project/Sparkle/releases/tag/2.10.0"
+ },
+ "fluidaudio": {
+  "version": "5c19d5e12320e22bbfb7a1877b089d2665a69add",
+  "file": "fluidaudiocli",
+  "sha256": "521016abdc7c2a1cdc31c8fe37043f93062cae6d842c90431a05d96ab9bde4a8",
+  "source": "https://github.com/tonyprots/transcriber-skill/releases/download/fluidaudio-5c19d5e/fluidaudiocli",
+  "upstream": "https://github.com/FluidInference/FluidAudio/commit/5c19d5e12320e22bbfb7a1877b089d2665a69add",
+  "license": "Apache-2.0",
+  "taken_from": {
+   "repo": "transcriber",
+   "commit": "fed357c5b2860cb9d736dbf59bc94d8491a8decb",
+   "path": "skills/transcriber/bin/macos-arm64/fluidaudiocli",
+   "pinned_by": "skills/transcriber/bin/macos-arm64/fluidaudiocli.sha256",
+   "note": "Бинарника в git transcriber нет (.gitignore с 12f95ff): взята локальная копия из его рабочего дерева без скачивания; её SHA-256 совпал с fluidaudiocli.sha256 и NOTICE.md этого коммита."
+  },
+  "notices": {
+   "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+   "NOTICE.md": "abdbbcd1cc75e1b60aeb9562d7f0f9b503d838ad241ea9742b60ec1787eefd63"
+  }
+ }
+}

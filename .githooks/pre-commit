@@ -1,0 +1,4 @@
+#!/bin/bash
+# Запрещённые строки в том, что уходит в коммит (scripts/check-denylist.sh). Включается один раз:
+#   git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check-denylist.sh" --staged

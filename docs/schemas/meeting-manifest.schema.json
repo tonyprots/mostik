@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mostik.app/schemas/meeting-manifest.schema.json",
+  "title": "Mostik: manifest.json папки встречи",
+  "description": "Машинное описание встречи. Пишут движок и приложение слиянием ключей; неизвестные поля сохраняются. Описание — docs/meeting-folder.md.",
+  "type": "object",
+  "required": ["schema", "version", "id", "sensitive", "recording", "transcript", "files"],
+  "properties": {
+    "schema": {"const": "mostik.meeting"},
+    "version": {"type": "integer", "minimum": 1},
+    "id": {"type": "string", "description": "Имя папки: yyyy-MM-dd-HHmmss (у старых встреч бывает yyyy-MM-dd-HHmm)."},
+    "title": {"type": ["string", "null"]},
+    "title_source": {"enum": ["default", "calendar", "summary", "user"], "description": "summary — тема из основной сводки, ставится только вместо default; user — введено человеком."},
+    "started": {"type": ["string", "null"], "description": "ISO 8601 с часовым поясом."},
+    "ended": {"type": ["string", "null"]},
+    "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+    "language": {"type": ["string", "null"]},
+    "attendees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "self": {"type": "boolean", "description": "Владелец календаря (сам пользователь)."}
+        }
+      }
+    },
+    "calendar": {
+      "type": ["object", "null"],
+      "properties": {
+        "event_id": {"type": "string"},
+        "title": {"type": "string"},
+        "start": {"type": "string"},
+        "end": {"type": "string"},
+        "link": {"type": ["string", "null"], "description": "Ссылка на звонок из события (Zoom, Meet, Телемост, Teams…)."}
+      }
+    },
+    "sensitive": {
+      "type": "boolean",
+      "description": "Чувствительная встреча: не отдаётся хукам, рецептам, брифам и MCP. Истинно и тогда, когда в шапке meeting.md стоит sensitive: true."
+    },
+    "agenda": {"type": "array", "items": {"type": "string"}, "description": "Повестка из события календаря."},
+    "text_only": {
+      "type": "object",
+      "description": "Отрезки «только текст»: звук в них обнуляется (или стирается целиком при whole) после расшифровки.",
+      "properties": {
+        "whole": {"type": "boolean"},
+        "spans": {"type": "array", "items": {"type": "array", "items": {"type": "number", "minimum": 0}}},
+        "silenced_at": {"type": "string"}
+      }
+    },
+    "app": {"type": ["string", "null"], "description": "Приложение звонка, если запись началась по детектору."},
+    "recording": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["recording", "complete", "recovered", "incomplete"],
+          "description": "recording — идёт (или приложение упало посреди записи); complete — без сбоев; recovered — дорожка вставала и перезапущена; incomplete — часть звука потеряна."
+        },
+        "restarts": {"type": "integer", "minimum": 0, "description": "Сколько раз за запись перезапускались дорожки, всего."},
+        "restarts_by_track": {
+          "type": "object",
+          "description": "Перезапуски по дорожкам; есть, если перезапуск был.",
+          "properties": {
+            "mic": {"type": "integer", "minimum": 0},
+            "system": {"type": "integer", "minimum": 0}
+          }
+        },
+        "started_at": {"type": ["string", "null"], "description": "Начало записи; у продолженной встречи — начало первой части."},
+        "continued_at": {"type": "string", "description": "Когда запись продолжили в той же папке."},
+        "ended_at": {"type": "string"},
+        "gave_up": {"type": "array", "items": {"enum": ["mic", "system"]}, "description": "Дорожки, которые не поднялись после трёх перезапусков."},
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["track", "file", "offset_seconds"],
+            "properties": {
+              "track": {"enum": ["mic", "system"]},
+              "file": {"type": "string"},
+              "offset_seconds": {"type": "number", "minimum": 0, "description": "Время начала сегмента от начала записи (по часам записи, без пауз)."}
+            }
+          }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["pending", "processing", "done", "failed", "missing"]},
+        "attempts": {"type": "integer", "minimum": 0},
+        "error": {"type": ["string", "null"]},
+        "code": {"type": ["string", "null"], "description": "При failed — код сбоя (diarization_memory — можно повторить без голосов). При done — расшифровано без разделения по голосам: diarization_unavailable — на этом Mac нет fluidaudiocli или моделей, diarization_failed — модель голосов упала на этой записи."}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "status": {"enum": ["none", "done", "partial", "failed"]},
+        "mode": {"type": ["string", "null"]}
+      }
+    },
+    "audio": {
+      "type": "object",
+      "properties": {
+        "kept": {"type": "boolean", "description": "false — аудио перенесено в Корзину после готовой сводки (W13)."},
+        "trashed_at": {"type": ["string", "null"]},
+        "trashed": {"type": "array", "items": {"type": "string"}, "description": "Что ушло в Корзину."},
+        "removed_at": {"type": "string", "description": "Встреча «только текст»: когда звук стёрт насовсем."},
+        "removed": {"type": "array", "items": {"type": "string"}},
+        "reason": {"enum": ["text_only"]},
+        "files": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "files": {
+      "type": "object",
+      "description": "Какие файлы контракта сейчас есть в папке.",
+      "properties": {
+        "meeting_md": {"const": "meeting.md"},
+        "notes_md": {"const": "notes.md"},
+        "transcript_json": {"const": "transcript.json"},
+        "transcript_md": {"const": "transcript.md"},
+        "summary_md": {"const": "summary.md"},
+        "notes_json": {"const": "notes.json"}
+      }
+    },
+    "hook": {
+      "type": "object",
+      "description": "Последний запуск хука после встречи (M11).",
+      "properties": {
+        "ran_at": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]},
+        "timed_out": {"type": "boolean"},
+        "skipped": {"type": ["string", "null"]}
+      }
+    },
+    "created_by": {"type": "string"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"}
+  }
+}
