@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Микрофон: диктовка и своя дорожка встречи (NSMicrophoneUsageDescription). -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Календарь: названия встреч и участники (NSCalendarsFullAccessUsageDescription). -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+	<!-- Звук системы (process tap, NSAudioCaptureUsageDescription), «Запись экрана» и Универсальный доступ
+	     entitlement не требуют: их выдаёт TCC. Apple Events приложение не шлёт: Календарь и Почта
+	     открываются файлом .ics и ссылкой mailto через NSWorkspace. -->
+</dict>
+</plist>

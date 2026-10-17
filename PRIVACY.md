@@ -1,0 +1,79 @@
+# Приватность / Privacy
+
+Коротко: Mostik ничего не собирает. Нет аналитики, телеметрии, учётных записей и своих серверов. Распознавание речи идёт на вашем Mac. В облако текст уходит только по вашему явному согласию и только через `claude -p` — Claude Code, установленный и авторизованный вами.
+
+## Что хранится на Mac
+
+| Что | Где |
+|---|---|
+| История диктовок: текст, сырой текст, сомнения, аудио | `~/Library/Application Support/Mostik/` (`history.jsonl`, `recordings/`) |
+| Встречи: дорожки звука, расшифровка, пометки, сводка, кадры окна звонка (если включены) | папка встречи в `~/Library/Application Support/Mostik/meetings/` |
+| Личный словарь и словари проектов | `glossary.yaml`, `projects/` там же |
+| Голосовая память говорящих (только по согласию) | `voices/` там же; стирается в Настройках |
+| Поисковый индекс: отрывки встреч и документов и их поисковые слова | `index.sqlite` там же; обновляется при следующем поиске. У встреч «только на этом Mac» расшифровка и кадры в нём остаются — по ним отвечает только локальная модель; в облако и агентам (MCP, `mostik`) они не уходят |
+| Брифы встреч и недельные сводки — в них цитаты встреч | `briefs/`, `digests/` там же; при пометке встречи «только на этом Mac» не пересобираются, их можно удалить |
+| Карточки собеседников: реплики, договорённости, ваши заметки | `people/` там же |
+| Настройки, согласия и команда после встречи | `settings.json` там же |
+| Названия и участники встреч из Календаря — копия для словаря и брифов, заменяется целиком | `calendar.json` там же |
+| Пары «было → стало» из ваших правок диктовки — чтобы не повторять ошибку | `learning.json` там же |
+| Задачи из встреч: отметки «сделано» | `archive/tasks.json` там же |
+| Ваши рецепты и шаблоны встреч | `recipes/`, `templates/` там же |
+| Диктовка для занятого агента — пока он её не заберёт | `agent-queue/` там же |
+| Заметки «подготовка к встрече» к событиям Календаря | `meeting-prep.json` там же |
+| Ваши стили причёсывания (`prompt.md`, `dictionary.txt`) | `styles/` там же |
+| Скрипты хуков для агентов (если вы их поставили) и события хуков для озвучки — удаляются после прочтения | `hooks/`, `agent-events/` там же |
+| Журналы и отчёты о сбоях — без текста диктовок | `~/Library/Logs/Mostik/`: `app.log`, `engine.log`, `crashes/`; никуда не отправляются |
+| Вывод команды после встречи — что напечатает ваша команда, до 16 000 знаков за запуск | `~/Library/Logs/Mostik/meeting-hooks.log`; по 1 МБ, хранятся три файла |
+
+Аудио диктовок (`recordings/`) хранится 1 день, чтобы можно было распознать запись заново, потом удаляется — и звук без записи в истории (например, после сбоя) тоже; текст остаётся в истории по сроку из Настроек (по умолчанию 7 дней). Хранение звука можно выключить совсем. Режим «только текст» не хранит звук встречи после расшифровки. Распознавание встречи не оставляет копий текста вне её папки: кэш распознавания (`~/.cache/transcriber`) Mostik не использует. Производное от расшифровки — поисковый индекс, брифы, сводки, карточки собеседников — лежит рядом с папками встреч, см. таблицу. Удалили папку встречи — её текст пропадёт из индекса при следующем вопросе, а брифы и сводки удаляются отдельно.
+
+Пока идёт работа, во временной папке macOS (`$TMPDIR`) лежат: `mostik-tracks-*` — звук встречи на время расшифровки, `mostik-live-*.wav` — звук для живой расшифровки встречи, `mostik-voices-*` — векторы голосов встречи, `mostik-wispr-*` — копия базы Wispr Flow при импорте словаря, `mostik-polish-*` — пустая рабочая папка `claude -p`, `mostik-commands-*` — черновик события голосовой команды (`.ics`) для Календаря, `transcriber-asr-*` и `transcriber-download-*` — рабочие папки распознавания встречи. Mostik удаляет их сам; оставшиеся после сбоя убирает следующий запуск (папки распознавания — если им больше суток: их может держать идущая расшифровка), черновики событий — ещё и следующий черновик, векторы голосов — ещё и «Забыть всех» и стирание отпечатков при выключении голосовой памяти.
+
+В поле пароля Mostik не записывает: если включён защищённый ввод или курсор стоит в поле пароля, запись не начинается — звука и текста нет, в облако и в историю ничего не попадает. Если поле пароля появилось посреди записи, звук удаляется в конце записи, до распознавания. Если — уже во время распознавания, текст не вставляется и не уходит агенту, а в истории остаётся только отметка, без текста и звука.
+
+## Что и когда уходит в сеть
+
+| Когда | Что | Куда |
+|---|---|---|
+| Причёсывание текста бэкендом Claude — после экрана согласия | текст диктовки; контекст поля и буфер — только если включены отдельно | Anthropic через ваш `claude -p` |
+| Сводка, заметки и задачи встречи, архив встреч, голосовая правка, команды-намерения — с бэкендом Claude и после согласия | расшифровка или нужные её фрагменты, ваш вопрос | Anthropic через ваш `claude -p` |
+| Проверка обновлений (Sparkle) — в выпусках с лентой обновлений, раз в день и по «Проверить обновления…» в меню; выключателя нет, ставится обновление только по вашей кнопке (или автоматически, если вы включили это в окне обновления) | адрес компьютера (IP) и версия Mostik; при установке — загрузка файла обновления | лента обновлений на GitHub Pages (`tonyprots.github.io`); файл — из GitHub Releases |
+| Команда после встречи (хук) — только если вы её задали и подтвердили в Mostik | то, что ваша команда возьмёт из папки встречи: путь к ней приходит в `$1` и `MOSTIK_MEETING_DIR`; встречи «только на этом Mac» хук не получает | куда отправит ваша команда |
+| Агенты (Claude Code, Codex), если вы установили хук или MCP Mostik | хук: название встречи в ближайший час и словарь проекта, участники — только если включены отдельно; MCP и команда `mostik`: встречи, расшифровки, календарь, историю диктовок и сомнения распознавания (`mostik history`, `recent_doubts`), которые агент запросит | облако модели агента (Anthropic, OpenAI) — его отправляет агент вместе со своим контекстом |
+| Google Календарь — только если вы его подключили | вход через браузер (Mostik просит только чтение календаря и почту аккаунта); раз в 5 минут — запрос событий отмеченных календарей за ±7 дней | Google (`accounts.google.com`, `oauth2.googleapis.com`, `www.googleapis.com`) |
+| Яндекс Календарь — только если вы его подключили | логин и пароль приложения; раз в 5 минут — запрос событий отмеченных календарей за ±7 дней | Яндекс (`caldav.yandex.ru`) |
+| Загрузка моделей — по кнопке | запрос файлов моделей | Hugging Face |
+
+С локальной моделью (MLX) причёсывание, сводки и команды работают без сети. Встречи, помеченные чувствительными, не попадают в архив, брифы и ответы агентам, рецепты после встречи для них не запускаются. С Claude не уходят ни их отрывки, ни ответы и памятка беседы, которые локальная модель построила на них до переключения на облако. Календарь, распознавание текста на картинках и кадрах (Vision) и голос озвучки работают на устройстве. Разделение встречи по голосам и голосовая память (`fluidaudiocli`) тоже работают без сети: модели FluidAudio Mostik не скачивает и не запускает `fluidaudiocli`, пока их полного набора нет на Mac; адрес, откуда бинарник взял бы модели, указывает на закрытый порт этого же Mac, а для голосовой памяти он запускается ещё и в песочнице без сети.
+
+Чем `claude -p` пользуется дальше, определяют условия Anthropic и ваша учётная запись Claude — Mostik видит только ответ.
+
+## Разрешения macOS
+
+- **Микрофон** — запись диктовки и своей дорожки встречи.
+- **Универсальный доступ** — горячие клавиши и вставка текста в поле; поля паролей не читаются и не заполняются.
+- **Запись звука системы** — дорожка собеседников на встрече.
+- **Запись экрана** — только для кадров окна звонка, если вы включили их для встречи.
+- **Календарь** — названия и участники встреч для словаря и брифа, только из календарей macOS, которые вы отметили в «Настройки → Встречи → Календарь macOS»; без этого выбора доступ не запрашивается. Google и Яндекс работают без этого разрешения: ключ доступа Google и пароль приложения Яндекса хранятся в связке ключей (`app.mostik.mac.calendars`), в `settings.json` — только логин и список отмеченных календарей ([docs/calendars.md](docs/calendars.md)). Сам Mostik календарь никуда не отправляет, кроме запросов к самим Google и Яндексу; подключённый агент — см. таблицу выше. Внешний календарь-команда ([docs/external-calendar.md](docs/external-calendar.md)) разрешения не требует: это ваш файл, Mostik запускает его без своих ключей и ничего ему не передаёт, кроме окна дат; куда ходит сама команда, решает она.
+
+---
+
+## In short
+
+Mostik collects nothing: no analytics, no telemetry, no accounts, no servers of its own. Speech recognition runs on your Mac. Text leaves the Mac only with your explicit consent, and only through `claude -p` — the Claude Code you installed and signed in to.
+
+**Stored locally:** under `~/Library/Application Support/Mostik/` — dictation history (`history.jsonl`, 7 days by default, configurable) and dictation audio (`recordings/`, kept 1 day for re-transcription, then removed, as is audio with no history entry, e.g. after a crash; can be turned off), meetings (`meetings/`: audio tracks, transcripts, marks, summaries, optional call-window frames), personal and project glossaries (`glossary.yaml`, `projects/`), voice memory (`voices/`, opt-in, erasable in Settings), settings, consents and the after-meeting command (`settings.json`), a copy of Calendar meeting titles and attendees (`calendar.json`), “before → after” pairs from your dictation edits (`learning.json`), meeting-task check marks (`archive/tasks.json`), your meeting recipes and templates (`recipes/`, `templates/`), dictation waiting for a busy agent (`agent-queue/`), meeting-prep notes for Calendar events (`meeting-prep.json`), your polish styles (`styles/`: `prompt.md`, `dictionary.txt`), agent hook scripts if you installed them and hook events for spoken announcements, deleted once read (`hooks/`, `agent-events/`); under `~/Library/Logs/Mostik/` — logs and crash reports without dictated text (`app.log`, `engine.log`, `crashes/`) and the after-meeting command output (`meeting-hooks.log`: whatever your command prints, up to 16,000 characters per run, rotated at 1 MB, three files kept). Next to the meetings live what is derived from them: the search index (`index.sqlite`: meeting and document excerpts and their search words; for this-Mac-only meetings the transcript and frames stay in it for answers from the local model only — they never go to the cloud or to agents via MCP and `mostik`), meeting briefs and weekly digests (`briefs/`, `digests/`, with meeting quotes; not rebuilt when a meeting is later marked this-Mac-only — you can delete them), and people cards (`people/`). Nothing is uploaded. Recognition keeps no copy of the text outside the meeting folder: Mostik does not use the recognition cache (`~/.cache/transcriber`). A deleted meeting folder leaves the index on the next question; briefs and digests are deleted separately. While working, the macOS temporary folder (`$TMPDIR`) holds `mostik-tracks-*` (meeting audio during transcription), `mostik-live-*.wav` (audio for live meeting transcription), `mostik-voices-*` (meeting voice vectors), `mostik-wispr-*` (a copy of the Wispr Flow database while importing a glossary), `mostik-polish-*` (an empty working folder for `claude -p`), `mostik-commands-*` (a voice-command event draft, `.ics`, for Calendar) and `transcriber-asr-*`, `transcriber-download-*` (meeting recognition working folders); Mostik removes them itself, leftovers after a crash go on the next launch (recognition folders once older than a day, since a running transcription may hold them), event drafts also on the next draft, and voice vectors also on “Forget everyone” and on erasing voiceprints when voice memory is turned off. Mostik does not record in a password field: with secure input on or the cursor in a password field, recording does not start — no audio, no text, nothing goes to the cloud or the history. If a password field appears mid-recording, the audio is deleted when recording ends, before recognition; if it appears during recognition, the text is neither typed nor handed to an agent, and the history keeps only a marker without text or audio.
+
+**Sent over the network:**
+- Text polishing with the Claude backend, after a consent screen: the dictated text; field context and clipboard only if separately enabled — to Anthropic via your `claude -p`.
+- Meeting summaries, notes and tasks, the meeting archive, voice edit and voice intents with the Claude backend, after consent: the transcript or relevant excerpts and your question — to Anthropic via your `claude -p`.
+- Update checks (Sparkle) in releases with an update feed, once a day and on “Check for Updates…” in the menu; there is no switch, and an update installs only when you click Install (or automatically, if you tick that in the update window): your IP address and the Mostik version go to the update feed on GitHub Pages (`tonyprots.github.io`); installing downloads the file from GitHub Releases.
+- The after-meeting command (hook), only if you set it and confirmed it in Mostik: whatever your command takes from the meeting folder, whose path it gets as `$1` and `MOSTIK_MEETING_DIR`; this-Mac-only meetings never reach it. It goes wherever your command sends it.
+- Agents (Claude Code, Codex), if you installed the Mostik hook or MCP: the hook gives the title of a meeting within the hour and the project glossary, attendees only if separately enabled; through MCP and the `mostik` command the agent reads meetings, transcripts, the calendar, the dictation history and recognition doubts (`mostik history`, `recent_doubts`) it asks for. The agent sends this with its own context to its model’s cloud (Anthropic, OpenAI).
+- Google Calendar, only if you connected it: sign-in in your browser (read-only calendar access and the account email); every 5 minutes, a request for events of the ticked calendars over ±7 days — to Google.
+- Yandex Calendar, only if you connected it: your login and app password; every 5 minutes, a request for events of the ticked calendars over ±7 days — to Yandex (`caldav.yandex.ru`).
+- Model downloads on request: model files from Hugging Face.
+
+With the local MLX model, polishing, summaries and intents work offline. Meetings marked sensitive are excluded from the archive, briefs and agent answers, and post-meeting recipes skip them. Calendar, text recognition in images and frames (Vision) and speech output run on device. An external calendar command (docs/external-calendar.md) is your own file: Mostik runs it without its keys and passes it only the date window; where the command itself connects is up to it. Splitting a meeting by voice and voice memory (`fluidaudiocli`) run offline too: Mostik never downloads FluidAudio models and does not start `fluidaudiocli` until the full model set is on the Mac; the address it would fetch models from points to a closed port on this Mac, and for voice memory it also runs in a no-network sandbox.
+
+**macOS permissions:** Microphone (recording), Accessibility (hotkeys and inserting text; password fields are never read or typed into), System Audio Recording (the other side of a call), Screen Recording (call-window frames only, if you enable them for a meeting), Calendar (meeting titles and attendees for the glossary and briefs, only from the macOS calendars you tick; Google and Yandex need no permission — their access key and app password stay in the keychain; Mostik itself sends the calendar nowhere — a connected agent, see above).

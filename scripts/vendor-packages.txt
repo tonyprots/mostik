@@ -1,0 +1,42 @@
+# Пакеты встроенного Python (П8, пункт 2): минимальный набор по фактическим импортам движка.
+# Замер: трассировка импортов (аудит-хук `import`) на всех тестах движка, включая
+# медленные (настоящие модели, процесс движка, встреча через transcribe.py с диаризацией,
+# живая LLM), плюс прогон движка из собранного .app. Чего здесь нет — не импортировалось.
+#
+# Формат: <имя дистрибутива> <источник>; tr — venv transcriber, llm — engine/.venv-llm.
+# Копируются файлы из RECORD дистрибутива и его .dist-info; из сети ничего не ставится.
+
+# ASR: GigaAM/Parakeet/Silero через onnx-asr, Whisper через mlx-audio
+numpy tr
+onnx_asr tr
+onnxruntime tr
+mlx tr
+mlx_metal tr
+mlx_audio tr
+huggingface_hub tr
+transformers tr
+tokenizers tr
+# transformers при импорте сверяет метаданные зависимостей (dependency_versions_check)
+safetensors tr
+regex tr
+tqdm tr
+filelock tr
+packaging tr
+pyyaml tr
+typing_extensions tr
+# huggingface_hub 1.x: сеть (импортируется при загрузке модуля, в работе офлайн)
+httpx tr
+httpcore tr
+h11 tr
+anyio tr
+idna tr
+certifi tr
+# вывод huggingface_hub/transformers
+rich tr
+pygments tr
+click tr
+# Локальная LLM (mlx-lm): работает на mlx 0.32.2 и transformers из набора выше
+mlx_lm llm
+jinja2 llm
+markupsafe llm
+sentencepiece llm

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mostik.app/schemas/meeting-transcript.schema.json",
+  "title": "Mostik: transcript.json папки встречи",
+  "description": "Дословная расшифровка по говорящим. Номер реплики в turns (он же turns[].id) — адрес для ссылок «<папка>#<номер>». У встреч до M10 нет полей schema, version, id и turns[].id: номер = индекс.",
+  "type": "object",
+  "required": ["date", "duration_seconds", "participants", "turns"],
+  "properties": {
+    "schema": {"const": "mostik.transcript"},
+    "version": {"type": "integer"},
+    "id": {"type": "string"},
+    "date": {"type": "string"},
+    "title": {"type": ["string", "null"]},
+    "diarization": {
+      "type": "object",
+      "description": "Есть, только если системная дорожка расшифрована без разделения по голосам. diarization_unavailable — на этом Mac нет fluidaudiocli или моделей FluidAudio; diarization_failed — модель голосов дважды упала на этой записи. Все собеседники — «Собеседник 1».",
+      "required": ["available", "code"],
+      "properties": {"available": {"const": false}, "code": {"enum": ["diarization_unavailable", "diarization_failed"]}}
+    },
+    "attendees": {"type": "array", "items": {"type": "string"}},
+    "marks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "text"],
+        "properties": {"at": {"type": "number"}, "text": {"type": "string"}}
+      }
+    },
+    "duration_seconds": {"type": "number"},
+    "language": {"type": "string"},
+    "participants": {"type": "array", "items": {"type": "string"}},
+    "tracks": {"type": "object"},
+    "echo_dropped": {"type": "integer"},
+    "speaker_review": {"type": "integer", "description": "M15: сколько реплик системной дорожки с уверенностью метки ниже 0,6 — на проверку."},
+    "speaker_names": {"type": "object", "additionalProperties": {"type": "string"}, "description": "M14: имена меток диаризации, {«Собеседник N»: имя}. Правится из окна встречи."},
+    "voices": {
+      "type": "object",
+      "description": "M14: голосовая память, только если включена. Векторов здесь нет — они в <MOSTIK_HOME>/voices/ (docs/voice-memory.md).",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "available": {"type": "boolean"},
+        "detail": {"type": "string"},
+        "model": {"type": "string"},
+        "error": {"type": "string"},
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "person_id", "name", "score"],
+            "properties": {"label": {"type": "string"}, "person_id": {"type": "string"}, "name": {"type": "string"}, "score": {"type": "number"}, "second": {"type": "number"}}
+          }
+        },
+        "pending": {"type": "array", "items": {"type": "string"}},
+        "short": {"type": "array", "items": {"type": "string"}},
+        "rejected": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["speaker", "start", "end", "text"],
+        "properties": {
+          "id": {"type": "integer"},
+          "speaker": {"type": "string", "description": "«Я» — микрофон; «Собеседник N» или имя из календаря — системная дорожка."},
+          "source": {"enum": ["mic", "system"]},
+          "start": {"type": "number"},
+          "end": {"type": "number"},
+          "text": {"type": "string"},
+          "label": {"type": "string", "description": "Исходная метка диаризации («Собеседник N») у реплик системной дорожки; speaker — видимое имя."},
+          "speaker_confidence": {"type": "number", "description": "M15: уверенность метки 0…1, формула — docs/voice-memory.md."},
+          "review": {"type": "boolean", "description": "M15: уверенность ниже 0,6 — метку стоит проверить."},
+          "reviewed": {"type": "boolean", "description": "Метку проверил человек."},
+          "speaker_alternatives": {
+            "type": "array",
+            "items": {"type": "object", "required": ["label", "share"], "properties": {"label": {"type": "string"}, "share": {"type": "number"}}}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "mostik.meeting",
+  "version": 1,
+  "id": "2026-10-17-101500",
+  "title": "Планёрка по выпуску",
+  "title_source": "calendar",
+  "started": "2026-10-17T10:15:00+03:00",
+  "ended": "2026-10-17T10:45:12+03:00",
+  "duration_seconds": 1812.4,
+  "language": "ru",
+  "attendees": [{"name": "Алекс Пример", "self": true}, {"name": "Сэм Образец", "self": false}],
+  "calendar": null,
+  "sensitive": false,
+  "recording": {"status": "complete", "restarts": 0, "segments": [], "warnings": []},
+  "transcript": {"status": "done", "attempts": 1, "error": null},
+  "summary": {"status": "none", "mode": null},
+  "audio": {"kept": false, "trashed_at": null, "files": []},
+  "files": {"transcript_json": "transcript.json"},
+  "created_by": "mostik",
+  "created_at": "2026-10-17T10:15:00+03:00",
+  "updated_at": "2026-10-17T10:46:00+03:00"
+}

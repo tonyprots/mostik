@@ -1,0 +1,21 @@
+{
+  "autoLanguage" : false,
+  "calendarEnabled" : false,
+  "consentAcknowledged" : true,
+  "holdKey" : "rightOption",
+  "keepAudio" : true,
+  "language" : "ru",
+  "meetingReminder" : false,
+  "meetingSuggest" : true,
+  "myName" : "",
+  "onboarded" : true,
+  "polish" : {
+    "backend" : "off",
+    "style" : "plain"
+  },
+  "retentionDays" : 7,
+  "schemaVersion" : 1,
+  "toggleShortcutEnabled" : true,
+  "verify" : true,
+  "verifierWaitMs" : 5000
+}

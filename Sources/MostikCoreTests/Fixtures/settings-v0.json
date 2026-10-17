@@ -1,0 +1,21 @@
+{
+  "autoLanguage" : false,
+  "holdKey" : "rightCommand",
+  "keepAudio" : true,
+  "language" : "en",
+  "meetingLive" : {
+    "liveTranscript" : false
+  },
+  "meetingSuggest" : true,
+  "myName" : "Alex Example",
+  "onboarded" : true,
+  "polish" : {
+    "backend" : "off",
+    "style" : "business"
+  },
+  "retentionDays" : 14,
+  "toggleShortcutEnabled" : true,
+  "updateChecks" : false,
+  "verify" : true,
+  "verifierWaitMs" : 500
+}

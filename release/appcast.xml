@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Лента обновлений Mostik для Sparkle 2. Шаблон: scripts/release.sh копирует его в папку выпуска
+     и добавляет запись на каждую версию (подпись EdDSA из sign_update, требование подписи приложения —
+     mostik:designatedRequirement). Выкладывает ленту scripts/publish-release.sh — в ветку gh-pages,
+     по адресу MOSTIK_FEED_URL из release/release.conf. -->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:mostik="urn:app.mostik:appcast">
+    <channel>
+        <title>Mostik</title>
+        <description>Обновления Mostik</description>
+        <language>ru</language>
+        <!-- items -->
+    </channel>
+</rss>

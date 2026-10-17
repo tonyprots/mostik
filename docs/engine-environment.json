@@ -1,0 +1,34 @@
+{
+  "description": "Эталон окружения движка и его детей. Приложение (Swift: EngineEnvironment, ToolEnvironment, SafeGit) и движок (Python: privacy, isolation, fluid_offline, project_glossary) держат эти списки каждое у себя; тесты обеих сторон сверяют их с этим файлом. Меняете список в коде — меняйте здесь, и вторая сторона упадёт, пока её не догонят.",
+  "offline": {
+    "HF_HUB_OFFLINE": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "TRANSCRIBER_NO_UPDATE_CHECK": "1"
+  },
+  "system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+  "base_keys": ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TERM", "__CF_USER_TEXT_ENCODING"],
+  "base_prefixes": ["LC_"],
+  "engine_keys": [
+    "PATH", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"
+  ],
+  "engine_prefixes": ["MOSTIK_", "TRANSCRIBER_", "HF_", "TRANSFORMERS_", "TOKENIZERS_", "ANTHROPIC_"],
+  "engine_set_child_keys": {
+    "description": "Ставит сам движок детям (fluid_offline.OFFLINE_ENV): закрытый реестр моделей для fluidaudiocli. Из окружения приложения не приходят, поэтому в белом списке приложения их нет.",
+    "keys": ["MODEL_REGISTRY_URL", "REGISTRY_URL"]
+  },
+  "dev_only_overrides": ["MOSTIK_MODELS_MANIFEST", "TRANSCRIBER_UNPIN", "MOSTIK_TRANSCRIBER", "MOSTIK_TRANSCRIBER_PYTHON", "MOSTIK_LLM_PYTHON"],
+  "app_only_address_overrides": {
+    "description": "Приложение снимает всегда и передаёт адрес командой (DebugOverrides); движок эти переменные не читает.",
+    "keys": ["MOSTIK_MODELS_BASE_URL"]
+  },
+  "unsafe_prefixes": ["PYTHON", "DYLD_", "LD_"],
+  "release_drop_prefixes": ["TRANSCRIBER_", "HF_"],
+  "release_drop": ["MOSTIK_CURATED_GLOSSARY", "XDG_CACHE_HOME"],
+  "toolchain": ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"],
+  "safe_git": [
+    "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false",
+    "-c", "core.sshCommand=false", "-c", "protocol.allow=never"
+  ]
+}

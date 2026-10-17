@@ -1,0 +1,693 @@
+from __future__ import annotations
+
+import os
+import threading
+import time
+from importlib import import_module
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import Any
+
+from .audio import SAMPLE_RATE, chunk_waveform
+from .catalog import FASTER_WHISPER_FALLBACK, WHISPER_TURBO
+from .weights import Weights, weights_for
+from .models import AudioChunk, Hypothesis, Segment
+from .retry import recognize_with_retry
+
+
+ProgressCallback = Callable[[int, int], None]
+
+
+class BackendUnavailable(RuntimeError):
+    """Запрошенный ASR-бэкенд недоступен."""
+
+
+class BackendMissing(BackendUnavailable):
+    """Бэкенда нет на этой машине (нет библиотеки или платформы).
+
+    Отличается от сбоя в работе: только на это допустим переход на CPU-fallback.
+    Сбой на трёхсотом окне или срабатывание watchdog — не повод молча начинать
+    те же часы работы на медленной модели.
+    """
+
+
+def _set_hub_offline(offline: bool) -> None:
+    """Переключает huggingface_hub между офлайном и сетью в текущем процессе.
+
+    Переменной окружения мало: константу huggingface_hub читает при импорте,
+    а библиотеки моделей импортируют его раньше нас. Поэтому правим и её.
+    """
+    value = "1" if offline else "0"
+    os.environ["HF_HUB_OFFLINE"] = value
+    os.environ["TRANSFORMERS_OFFLINE"] = value
+    try:
+        constants = import_module("huggingface_hub.constants")
+        constants.HF_HUB_OFFLINE = offline
+    except ImportError:
+        pass
+
+
+def force_hub_offline() -> None:
+    """Переводит huggingface_hub в офлайн для текущего процесса."""
+    _set_hub_offline(True)
+
+
+HUB_STALL_SECONDS = 45.0
+
+
+def load_with_hub_fallback(
+    load: Callable[[], Any],
+    *,
+    offline: bool,
+    label: str,
+    stall_seconds: float = HUB_STALL_SECONDS,
+) -> Any:
+    """Грузит модель; если Hub не отвечает, а веса уже в кэше — повторяет офлайн.
+
+    На бенчмарке Sortformer упал с «Server disconnected without
+    sending a response» при полностью скачанной модели — библиотека сходила
+    на Hub проверить обновления и не дождалась ответа. Без сети должна
+    работать любая модель, которая уже была загружена.
+
+    Ошибки мало: однажды прогон встал на загрузке VAD и простоял так,
+    пока его не убили руками. Молчащая сеть исключения не даёт, а таймаут
+    huggingface_hub (10 с) — на один запрос: с пятью ретраями и backoff на
+    каждый файл ожидание растягивается на минуты. Поэтому онлайн-попытке
+    даётся общий срок, и по нему мы уходим в кэш.
+
+    Срок — не ограничение сверху: если кэша нет (первая установка качает
+    гигабайты), офлайн-попытка провалится, и мы возвращаемся ждать онлайн
+    столько, сколько нужно. Срывать закачку модели из-за медленной сети
+    нельзя — иначе скилл не установится ни разу.
+    """
+    if offline:
+        force_hub_offline()
+        return load()
+
+    box: dict[str, Any] = {}
+
+    def attempt() -> None:
+        try:
+            box["value"] = load()
+        except Exception as error:  # ошибки сети у библиотек разные
+            box["error"] = error
+
+    worker = threading.Thread(target=attempt, name=f"hub-load:{label}", daemon=True)
+    worker.start()
+    worker.join(stall_seconds)
+    if "value" in box:
+        return box["value"]
+
+    online_error: Exception | None = box.get("error")
+    if online_error is None and worker.is_alive():
+        online_error = TimeoutError(f"Hub не ответил за {stall_seconds:.0f} с")
+    force_hub_offline()
+    try:
+        return load()
+    except Exception as offline_error:
+        if worker.is_alive():
+            # Кэша нет: срок истёк на настоящей закачке, а не на зависании.
+            # Возвращаем онлайн — иначе поток упадёт на следующем файле —
+            # и дожидаемся его.
+            _set_hub_offline(False)
+            worker.join()
+            if "value" in box:
+                return box["value"]
+            online_error = box.get("error", online_error)
+        raise BackendUnavailable(
+            f"{label}: не удалось загрузить модель ни с Hub, ни из локального кэша. "
+            f"Hub: {online_error}. Кэш: {offline_error}"
+        ) from offline_error
+
+
+class _PinnedLoad:
+    """Загрузка модели из закреплённых весов; запоминает, какие веса взяты.
+
+    Модели вне каталога (`--whisper-model large-v3`) библиотека грузит сама по
+    имени, как раньше: закреплять там нечего, в метаданных будет None.
+    """
+
+    def __init__(self, model: str, quantization: str | None = None) -> None:
+        self.model = model
+        self.quantization = quantization
+        self.weights: Weights | None = None
+
+    def path(self) -> Path | None:
+        self.weights = weights_for(self.model, self.quantization)
+        return self.weights.path if self.weights else None
+
+    def metadata(self) -> dict[str, Any] | None:
+        return self.weights.to_dict() if self.weights else None
+
+
+def _value(item: Any, name: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(name, default)
+    return getattr(item, name, default)
+
+
+def _confidence(item: Any) -> float | None:
+    for name in ("confidence", "probability", "score"):
+        value = _value(item, name)
+        if value is not None:
+            try:
+                number = float(value)
+                return max(0.0, min(1.0, number))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _segments(items: Iterable[Any]) -> list[Segment]:
+    result: list[Segment] = []
+    for item in items:
+        text = str(_value(item, "text", "")).strip()
+        if not text:
+            continue
+        start = float(_value(item, "start", 0.0) or 0.0)
+        end = float(_value(item, "end", start) or start)
+        result.append(
+            Segment(
+                start=max(0.0, start),
+                end=max(max(0.0, start), end),
+                text=text,
+                confidence=_confidence(item),
+            )
+        )
+    return result
+
+
+class GigaAMBackend:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        quantization: str | None = None,
+        providers: tuple[str, ...] = ("CPUExecutionProvider",),
+        offline: bool = False,
+    ) -> None:
+        self.model_name = model_name
+        self.quantization = quantization
+        self.providers = list(providers)
+        self.offline = offline
+
+    def transcribe_chunks(
+        self,
+        chunks: list[AudioChunk],
+        language: str = "ru",
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Hypothesis:
+        if self.offline:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        if not chunks:
+            return Hypothesis(
+                self.model_name,
+                language,
+                0.0,
+                [],
+                {"vad": "shared-silero", "chunks": []},
+            )
+        try:
+            import onnx_asr
+        except ImportError as exc:
+            raise BackendMissing("Не установлен onnx-asr. Установите зависимости скилла.") from exc
+
+        started = time.monotonic()
+        pinned = _PinnedLoad(self.model_name, self.quantization)
+        model = load_with_hub_fallback(
+            lambda: onnx_asr.load_model(
+                self.model_name,
+                pinned.path(),
+                quantization=self.quantization,
+                providers=self.providers,
+            ),
+            offline=self.offline,
+            label=self.model_name,
+        )
+        try:
+            if progress:
+                progress(0, len(chunks))
+            segments: list[Segment] = []
+            chunk_results: list[dict[str, Any]] = []
+            for index, chunk in enumerate(chunks, start=1):
+                result = recognize_with_retry(
+                    chunk,
+                    lambda part: {
+                        "text": str(
+                            model.recognize(chunk_waveform(part), sample_rate=SAMPLE_RATE)
+                        ).strip()
+                    },
+                )
+                text = str(result["text"])
+                chunk_results.append(result)
+                if text:
+                    segments.append(
+                        Segment(chunk.start, chunk.end, text, speakers=chunk.speakers)
+                    )
+                if progress:
+                    progress(index, len(chunks))
+        except Exception as exc:
+            raise BackendUnavailable(f"Не удалось запустить {self.model_name}: {exc}") from exc
+        return Hypothesis(
+            model=self.model_name,
+            language=language,
+            elapsed_seconds=time.monotonic() - started,
+            segments=segments,
+            metadata={
+                "vad": "shared-silero",
+                "quantization": self.quantization,
+                "weights": pinned.metadata(),
+                "chunks": chunk_results,
+            },
+        )
+
+
+class WhisperBackend:
+    """Независимая проверка через faster-whisper с временными метками слов."""
+
+    def __init__(
+        self,
+        model_name: str = FASTER_WHISPER_FALLBACK.model,
+        *,
+        offline: bool = False,
+        beam_size: int = 5,
+    ) -> None:
+        self.model_name = model_name
+        self.offline = offline
+        self.beam_size = beam_size
+
+    def transcribe_chunks(
+        self,
+        chunks: list[AudioChunk],
+        language: str = "ru",
+        *,
+        hotwords: list[str] | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> Hypothesis:
+        if self.offline:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        if not chunks:
+            return Hypothesis(
+                f"faster-whisper-{self.model_name}",
+                language,
+                0.0,
+                [],
+                {
+                    "vad": "shared-silero",
+                    "role": "independent_verifier_cpu_fallback",
+                    "chunks": [],
+                },
+            )
+        try:
+            module = import_module("faster_whisper")
+            model_class = module.WhisperModel
+        except (ImportError, AttributeError) as exc:
+            raise BackendMissing("Не установлен faster-whisper для CPU-fallback.") from exc
+        started = time.monotonic()
+        pinned = _PinnedLoad(self.model_name)
+        model = load_with_hub_fallback(
+            lambda: model_class(
+                str(pinned.path() or self.model_name),
+                device="cpu",
+                compute_type="int8",
+                local_files_only=self.offline or os.environ.get("HF_HUB_OFFLINE") == "1",
+            ),
+            offline=self.offline,
+            label=f"faster-whisper {self.model_name}",
+        )
+        try:
+            if progress:
+                progress(0, len(chunks))
+            segments: list[Segment] = []
+            chunk_results: list[dict[str, Any]] = []
+            detected = language
+
+            def recognize(part: AudioChunk) -> dict[str, Any]:
+                raw_segments, info = model.transcribe(
+                    chunk_waveform(part),
+                    language=language,
+                    beam_size=self.beam_size,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
+                    hotwords=", ".join(hotwords) if hotwords else None,
+                )
+                text_parts: list[str] = []
+                words_meta: list[dict[str, Any]] = []
+                confidences: list[float] = []
+                for phrase in raw_segments:
+                    phrase_text = str(getattr(phrase, "text", "")).strip()
+                    if phrase_text:
+                        text_parts.append(phrase_text)
+                    for word in getattr(phrase, "words", None) or []:
+                        word_text = str(getattr(word, "word", "")).strip()
+                        if not word_text:
+                            continue
+                        confidence = _confidence(word)
+                        if confidence is not None:
+                            confidences.append(confidence)
+                        words_meta.append(
+                            {
+                                "start": part.start + max(0.0, float(word.start)),
+                                "end": part.start + max(0.0, float(word.end)),
+                                "text": word_text,
+                                "confidence": confidence,
+                            }
+                        )
+                return {
+                    "text": " ".join(text_parts).strip(),
+                    "words": words_meta,
+                    "confidence": (
+                        sum(confidences) / len(confidences) if confidences else None
+                    ),
+                    "language": getattr(info, "language", None) or language,
+                }
+
+            for index, chunk in enumerate(chunks, start=1):
+                result = recognize_with_retry(chunk, recognize)
+                text = str(result["text"])
+                confidence = result.get("confidence")
+                if confidence is None:
+                    values = [
+                        float(word["confidence"])
+                        for word in result.get("words", [])
+                        if word.get("confidence") is not None
+                    ]
+                    confidence = sum(values) / len(values) if values else None
+                if text:
+                    segments.append(
+                        Segment(
+                            chunk.start,
+                            chunk.end,
+                            text,
+                            confidence,
+                            chunk.speakers,
+                        )
+                    )
+                chunk_results.append(result)
+                detected = result.get("language") or detected
+                if progress:
+                    progress(index, len(chunks))
+        except Exception as exc:
+            raise BackendUnavailable(f"Не удалось запустить Whisper {self.model_name}: {exc}") from exc
+        return Hypothesis(
+            model=f"faster-whisper-{self.model_name}",
+            language=str(detected),
+            elapsed_seconds=time.monotonic() - started,
+            segments=segments,
+            metadata={
+                "vad": "shared-silero",
+                "beam_size": self.beam_size,
+                "word_timestamps": True,
+                "role": "independent_verifier_cpu_fallback",
+                "hotwords": hotwords or [],
+                "weights": pinned.metadata(),
+                "chunks": chunk_results,
+            },
+        )
+
+    def detect_language(
+        self,
+        chunks: list[AudioChunk],
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Hypothesis:
+        """Язык речи по нескольким окнам — без распознавания текста."""
+        model_name = f"faster-whisper-{self.model_name}"
+        if not chunks:
+            return language_hypothesis(model_name, [], 0.0)
+        try:
+            module = import_module("faster_whisper")
+        except (ImportError, AttributeError) as exc:
+            raise BackendMissing("Не установлен faster-whisper для CPU-fallback.") from exc
+        pinned = _PinnedLoad(self.model_name)
+        model = load_with_hub_fallback(
+            lambda: module.WhisperModel(
+                str(pinned.path() or self.model_name),
+                device="cpu",
+                compute_type="int8",
+                local_files_only=self.offline or os.environ.get("HF_HUB_OFFLINE") == "1",
+            ),
+            offline=self.offline,
+            label=f"faster-whisper {self.model_name}",
+        )
+        started = time.monotonic()
+        windows: list[dict[str, float]] = []
+        try:
+            for index, chunk in enumerate(chunks, start=1):
+                _, _, ranked = model.detect_language(chunk_waveform(chunk))
+                windows.append({str(code): float(share) for code, share in ranked})
+                if progress:
+                    progress(index, len(chunks))
+        except Exception as exc:
+            raise BackendUnavailable(
+                f"Не удалось определить язык через {self.model_name}: {exc}"
+            ) from exc
+        return language_hypothesis(
+            model_name, windows, time.monotonic() - started, pinned.metadata()
+        )
+
+
+class MLXWhisperBackend:
+    """Независимая проверка Whisper Turbo, оптимизированная для Apple Silicon."""
+
+    def __init__(
+        self,
+        model_name: str = WHISPER_TURBO.model,
+        *,
+        offline: bool = False,
+    ) -> None:
+        self.model_name = model_name
+        self.offline = offline
+
+    def transcribe_chunks(
+        self,
+        chunks: list[AudioChunk],
+        language: str = "ru",
+        *,
+        hotwords: list[str] | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> Hypothesis:
+        if self.offline:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        if not chunks:
+            return Hypothesis(
+                self.model_name,
+                language,
+                0.0,
+                [],
+                {"vad": "shared-silero", "role": "independent_verifier", "chunks": []},
+            )
+        try:
+            generate = import_module("mlx_audio.stt.generate")
+            utils = import_module("mlx_audio.stt.utils")
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            raise BackendMissing(
+                f"Whisper Turbo MLX недоступен на этой машине: {exc}"
+            ) from exc
+        pinned = _PinnedLoad(self.model_name)
+        # Path, а не str: по строке MLX узнаёт семейство модели из последнего
+        # сегмента, а у снапшота это коммит. Из Path он берёт имя репозитория.
+        model = load_with_hub_fallback(
+            lambda: utils.load_model(pinned.path() or self.model_name),
+            offline=self.offline,
+            label="Whisper Turbo MLX",
+        )
+
+        started = time.monotonic()
+        segments: list[Segment] = []
+        chunk_results: list[dict[str, Any]] = []
+        detected = language
+        try:
+            if progress:
+                progress(0, len(chunks))
+
+            def recognize(part: AudioChunk) -> dict[str, Any]:
+                answer = generate.generate_transcription(
+                    model=model,
+                    audio=chunk_waveform(part),
+                    language=language,
+                    hotwords=hotwords or None,
+                    word_timestamps=True,
+                    condition_on_previous_text=False,
+                    verbose=None,
+                )
+                text = str(_value(answer, "text", "")).strip()
+                answer_language = _value(answer, "language", language) or language
+                raw_segments = _value(answer, "segments", []) or []
+                words_meta = []
+                confidences = []
+                segment_metrics = []
+                for phrase in raw_segments:
+                    words = _value(phrase, "words", []) or []
+                    for word in words:
+                        word_text = str(_value(word, "word", "")).strip()
+                        if not word_text:
+                            continue
+                        confidence = _confidence(word)
+                        if confidence is not None:
+                            confidences.append(confidence)
+                        words_meta.append(
+                            {
+                                "start": part.start + max(0.0, float(_value(word, "start", 0.0))),
+                                "end": part.start + max(0.0, float(_value(word, "end", 0.0))),
+                                "text": word_text,
+                                "confidence": confidence,
+                            }
+                        )
+                    segment_metrics.append(
+                        {
+                            "avg_logprob": _value(phrase, "avg_logprob"),
+                            "compression_ratio": _value(phrase, "compression_ratio"),
+                            "no_speech_prob": _value(phrase, "no_speech_prob"),
+                        }
+                    )
+                return {
+                    "text": text,
+                    "words": words_meta,
+                    "segment_metrics": segment_metrics,
+                    "confidence": (
+                        sum(confidences) / len(confidences) if confidences else None
+                    ),
+                    "language": answer_language,
+                }
+
+            for index, chunk in enumerate(chunks, start=1):
+                result = recognize_with_retry(chunk, recognize)
+                text = str(result["text"])
+                confidence = result.get("confidence")
+                if confidence is None:
+                    values = [
+                        float(word["confidence"])
+                        for word in result.get("words", [])
+                        if word.get("confidence") is not None
+                    ]
+                    confidence = sum(values) / len(values) if values else None
+                if text:
+                    segments.append(
+                        Segment(
+                            chunk.start,
+                            chunk.end,
+                            text,
+                            confidence,
+                            chunk.speakers,
+                        )
+                    )
+                chunk_results.append(result)
+                detected = result.get("language") or detected
+                if progress:
+                    progress(index, len(chunks))
+        except Exception as exc:
+            raise BackendUnavailable(f"Не удалось запустить Whisper Turbo MLX: {exc}") from exc
+        return Hypothesis(
+            model=self.model_name,
+            language=str(detected),
+            elapsed_seconds=time.monotonic() - started,
+            segments=segments,
+            metadata={
+                "vad": "shared-silero",
+                "word_timestamps": True,
+                "role": "independent_verifier",
+                "hotwords": hotwords or [],
+                "weights": pinned.metadata(),
+                "chunks": chunk_results,
+            },
+        )
+
+    def detect_language(
+        self,
+        chunks: list[AudioChunk],
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Hypothesis:
+        """Язык речи по первому токену Whisper — без распознавания текста.
+
+        `generate_transcription(language=None)` у MLX-сборки падает: в репозитории
+        весов нет процессора HF, а без него нет токенизатора. Токены языков у
+        многоязычного Whisper стоят подряд сразу за `<|startoftranscript|>`, и
+        порядок у них тот же, что в `LANGUAGES`, поэтому токенизатор не нужен.
+        """
+        if not chunks:
+            return language_hypothesis(self.model_name, [], 0.0)
+        try:
+            mx = import_module("mlx.core")
+            utils = import_module("mlx_audio.stt.utils")
+            whisper_audio = import_module("mlx_audio.stt.models.whisper.audio")
+            languages = import_module("mlx_audio.stt.models.whisper.tokenizer").LANGUAGES
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            raise BackendMissing(
+                f"Whisper Turbo MLX недоступен на этой машине: {exc}"
+            ) from exc
+        pinned = _PinnedLoad(self.model_name)
+        # Path, а не str: по строке MLX узнаёт семейство модели из последнего
+        # сегмента, а у снапшота это коммит. Из Path он берёт имя репозитория.
+        model = load_with_hub_fallback(
+            lambda: utils.load_model(pinned.path() or self.model_name),
+            offline=self.offline,
+            label="Whisper Turbo MLX",
+        )
+        started = time.monotonic()
+        windows: list[dict[str, float]] = []
+        try:
+            codes = list(languages)[: model.num_languages]
+            for index, chunk in enumerate(chunks, start=1):
+                mel = whisper_audio.log_mel_spectrogram(
+                    chunk_waveform(chunk),
+                    n_mels=model.dims.n_mels,
+                    padding=whisper_audio.N_SAMPLES,
+                )
+                frames = whisper_audio.pad_or_trim(
+                    mel, whisper_audio.N_FRAMES, axis=-2
+                ).astype(model.dtype)[None]
+                logits = model.logits(
+                    mx.array([[WHISPER_START_OF_TRANSCRIPT]]), model.encoder(frames)
+                )[0, 0]
+                first = WHISPER_START_OF_TRANSCRIPT + 1
+                shares = mx.softmax(
+                    logits[first : first + len(codes)].astype(mx.float32)
+                ).tolist()
+                windows.append(dict(zip(codes, map(float, shares))))
+                if progress:
+                    progress(index, len(chunks))
+        except Exception as exc:
+            raise BackendUnavailable(
+                f"Не удалось определить язык через Whisper Turbo MLX: {exc}"
+            ) from exc
+        return language_hypothesis(
+            self.model_name, windows, time.monotonic() - started, pinned.metadata()
+        )
+
+
+# Одинаков у всех многоязычных Whisper, от tiny до large-v3-turbo.
+WHISPER_START_OF_TRANSCRIPT = 50258
+
+
+def language_hypothesis(
+    model: str,
+    windows: list[dict[str, float]],
+    elapsed_seconds: float,
+    weights: dict[str, Any] | None = None,
+) -> Hypothesis:
+    """Итог определения языка в форме гипотезы: так его везёт тот же воркер
+    и хранит тот же кэш. Доли по окнам усредняются — одно окно с музыкой или
+    чужой цитатой не перевешивает остальные."""
+    totals: dict[str, float] = {}
+    for window in windows:
+        for code, share in window.items():
+            totals[code] = totals.get(code, 0.0) + share / len(windows)
+    ranked = sorted(totals.items(), key=lambda item: item[1], reverse=True)[:5]
+    return Hypothesis(
+        model=model,
+        language=ranked[0][0] if ranked else "und",
+        elapsed_seconds=elapsed_seconds,
+        segments=[],
+        metadata={
+            "role": "language_id",
+            "language_probability": round(ranked[0][1], 4) if ranked else 0.0,
+            "top_languages": [[code, round(share, 4)] for code, share in ranked],
+            "windows": len(windows),
+            "weights": weights,
+        },
+    )

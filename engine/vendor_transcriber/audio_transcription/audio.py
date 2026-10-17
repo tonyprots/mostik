@@ -1,0 +1,513 @@
+from __future__ import annotations
+
+import json
+import os
+import hashlib
+import shutil
+import subprocess
+import wave
+from dataclasses import replace
+from functools import lru_cache
+from pathlib import Path
+
+from .models import AudioChunk, MediaInfo, Section
+
+
+SAMPLE_RATE = 16_000
+
+
+class MediaToolError(RuntimeError):
+    """Ошибка подготовки медиафайла."""
+
+
+def require_media_tools() -> tuple[str, str]:
+    ffmpeg = find_command("ffmpeg")
+    ffprobe = find_command("ffprobe")
+    if not ffmpeg or not ffprobe:
+        # Правка Mostik: WAV читается без ffmpeg (`native_wav`), сюда попадает только другой формат.
+        raise MediaToolError(
+            "Этот формат читается только через ffmpeg, а его на этом Mac нет. "
+            "Сохраните запись как WAV или установите ffmpeg (brew install ffmpeg) и повторите."
+        )
+    return ffmpeg, ffprobe
+
+
+# --- WAV без ffmpeg (правка Mostik) ----------------------------------------------------------
+# Свои дорожки Mostik пишет в WAV PCM16/16 kHz/mono, а ffmpeg нет ни в macOS, ни в бандле.
+# PCM-WAV любой частоты, разрядности и числа каналов читается модулем `wave` и приводится к
+# 16 kHz mono numpy; ffmpeg нужен только для остальных форматов.
+
+
+def native_wav(source: Path) -> tuple[int, int, int, int] | None:
+    """(каналы, байт на отсчёт, частота, кадры) PCM-WAV, который прочтёт `wave`; None — нужен ffmpeg."""
+    try:
+        with wave.open(str(source), "rb") as handle:
+            params = (handle.getnchannels(), handle.getsampwidth(), handle.getframerate(), handle.getnframes())
+    except (wave.Error, EOFError, OSError):
+        return None
+    channels, width, rate, _ = params
+    if channels < 1 or width not in (1, 2, 3, 4) or rate <= 0:
+        return None
+    return params
+
+
+def _pcm_to_float(frames: bytes, channels: int, width: int):
+    """Байты PCM → float32 mono в [-1, 1): каналы усредняются, 8 бит — беззнаковые."""
+    import numpy as np
+
+    if width == 1:
+        samples = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif width == 3:
+        raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        value = raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)
+        value = np.where(value & 0x800000, value - 0x1000000, value)
+        samples = value.astype(np.float32) / float(1 << 23)
+    else:
+        dtype, scale = ("<i2", 32768.0) if width == 2 else ("<i4", float(1 << 31))
+        samples = np.frombuffer(frames, dtype=dtype).astype(np.float32) / scale
+    usable = len(samples) - len(samples) % channels
+    return samples[:usable].reshape(-1, channels).mean(axis=1, dtype=np.float32)
+
+
+def resample_to_16k(samples, rate: int):
+    """Передискретизация в 16 kHz: при понижении — НЧ-фильтр (окно Хэннинга), затем линейная интерполяция."""
+    import numpy as np
+
+    if rate == SAMPLE_RATE or len(samples) == 0:
+        return samples.astype(np.float32, copy=False)
+    if rate > SAMPLE_RATE:
+        cutoff = 0.5 * SAMPLE_RATE / rate * 0.9  # доля частоты дискретизации, с запасом до Найквиста
+        half = 32
+        n = np.arange(-half, half + 1)
+        taps = np.sinc(2 * cutoff * n) * np.hanning(2 * half + 1)
+        taps = (taps / taps.sum()).astype(np.float32)
+        samples = np.convolve(samples, taps, mode="same").astype(np.float32)
+    count = int(len(samples) * SAMPLE_RATE // rate)
+    positions = np.arange(count, dtype=np.float64) * (rate / SAMPLE_RATE)
+    return np.interp(positions, np.arange(len(samples)), samples).astype(np.float32)
+
+
+def _probe_wav(source: Path, params: tuple[int, int, int, int]) -> MediaInfo:
+    channels, width, rate, frames = params
+    return MediaInfo(
+        source=source,
+        duration_seconds=frames / rate,
+        codec=f"pcm_s{width * 8}le" if width > 1 else "pcm_u8",
+        sample_rate=rate,
+        channels=channels,
+        size_bytes=source.stat().st_size,
+        sha256=_sha256(source),
+    )
+
+
+def _prepare_wav(source: Path, prepared: Path, params: tuple[int, int, int, int],
+                 section: Section | None) -> None:
+    import numpy as np
+
+    channels, width, rate, frames = params
+    first, last = 0, frames
+    if section is not None:
+        first = max(0, min(frames, round(section.start * rate)))
+        last = max(first, min(frames, round(section.end * rate)))
+    with wave.open(str(source), "rb") as handle:
+        handle.setpos(first)
+        raw = handle.readframes(last - first)
+    mono = resample_to_16k(_pcm_to_float(raw, channels, width), rate)
+    pcm = np.clip(np.round(mono * 32768.0), -32768, 32767).astype("<i2")
+    with wave.open(str(prepared), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(SAMPLE_RATE)
+        target.writeframes(pcm.tobytes())
+
+
+def _sha256(source: Path) -> str:
+    digest = hashlib.sha256()
+    with source.open("rb") as stream_handle:
+        for block in iter(lambda: stream_handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def find_command(name: str) -> str | None:
+    discovered = shutil.which(name)
+    if discovered:
+        return discovered
+    for directory in (Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def probe_media(source: Path) -> MediaInfo:
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Медиафайл не найден: {source}")
+    params = native_wav(source)
+    if params is not None:
+        return _probe_wav(source, params)
+    _, ffprobe = require_media_tools()
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name,sample_rate,channels:format=duration",
+        "-of",
+        "json",
+        str(source),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise MediaToolError(completed.stderr.strip() or f"ffprobe не прочитал {source}")
+    payload = json.loads(completed.stdout)
+    streams = payload.get("streams", [])
+    if not streams:
+        raise MediaToolError(f"В файле нет аудиодорожки: {source}")
+    stream = streams[0]
+    duration_raw = payload.get("format", {}).get("duration")
+    return MediaInfo(
+        source=source,
+        duration_seconds=float(duration_raw) if duration_raw is not None else None,
+        codec=stream.get("codec_name"),
+        sample_rate=int(stream["sample_rate"]) if stream.get("sample_rate") else None,
+        channels=int(stream["channels"]) if stream.get("channels") else None,
+        size_bytes=source.stat().st_size,
+        sha256=_sha256(source),
+    )
+
+
+def prepare_audio(
+    source: Path, work_dir: Path, section: Section | None = None
+) -> tuple[Path, MediaInfo]:
+    """Создаёт нормализованный WAV PCM16/16 kHz/mono, не меняя исходник.
+
+    С `section` в WAV попадает только кусок, а исходник по-прежнему
+    опознаётся по SHA-256 целиком. Резать здесь, а не при скачивании: один
+    файл обслуживает сколько угодно фрагментов, а `yt-dlp --download-sections`
+    качал бы каждый заново и 2026-09-22 падал на ffmpeg с кодом 8.
+    """
+    info = probe_media(source)
+    trim: list[str] = []
+    if section is not None:
+        total = info.duration_seconds
+        if total is not None and section.start >= total:
+            raise ValueError(
+                f"Фрагмент {section.label} начинается после конца записи "
+                f"({total:.0f} с)"
+            )
+        if total is not None and section.end > total:
+            section = Section(section.start, total)
+        trim = ["-ss", f"{section.start:.3f}", "-to", f"{section.end:.3f}"]
+        info = replace(info, duration_seconds=section.end - section.start, section=section)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    prepared = work_dir / "prepared.wav"
+    params = native_wav(info.source)
+    if params is not None:
+        _prepare_wav(info.source, prepared, params, info.section)
+        return prepared, info
+    ffmpeg, _ = require_media_tools()
+    command = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        *trim,
+        "-i",
+        str(info.source),
+        "-map",
+        "0:a:0",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        str(prepared),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0 or not prepared.is_file():
+        raise MediaToolError(completed.stderr.strip() or "ffmpeg не подготовил WAV")
+    return prepared, info
+
+
+def pack_speech_spans(
+    spans: list[tuple[int, int]],
+    waveform_samples: int,
+    *,
+    sample_rate: int = SAMPLE_RATE,
+    max_seconds: float = 20.0,
+    pad_seconds: float = 0.2,
+) -> list[tuple[int, int]]:
+    """Пакует соседние VAD-интервалы в общие для всех ASR контекстные окна."""
+    if not spans:
+        return []
+    limit = round(max_seconds * sample_rate)
+    pad = round(pad_seconds * sample_rate)
+    packed: list[tuple[int, int]] = []
+    group_start, group_end = spans[0]
+    for start, end in spans[1:]:
+        if end - group_start <= limit:
+            group_end = end
+            continue
+        packed.append((max(0, group_start - pad), min(waveform_samples, group_end + pad)))
+        group_start, group_end = start, end
+    packed.append((max(0, group_start - pad), min(waveform_samples, group_end + pad)))
+    return packed
+
+
+# Тихое начало фразы с дальнего микрофона Silero при пороге 0,5 ловит поздно
+# или не ловит вовсе. Снизить порог для всей записи нельзя: окна громкой речи
+# тоже сдвигаются, склейка в 20-секундные окна перестраивается каскадом, и на
+# диктовках WER вырос с 5,7 % до 6,7 %. Поэтому окна строятся по основному
+# проходу, как раньше, а чувствительный только удлиняет их назад и добавляет
+# пропущенную речь (`experiments/vad-onset/`, 2026-10-05).
+SENSITIVE_THRESHOLD = 0.2
+# Выход из речи как у основного прохода: с выходом 0,05 чувствительные
+# интервалы перекрывали паузы между фразами и тянули окна к соседям.
+SENSITIVE_EXIT_THRESHOLD = 0.35
+MIN_ONSET_GAIN_SECONDS = 0.5
+MAX_ONSET_SHIFT_SECONDS = 4.0
+
+
+def add_quiet_onsets(
+    windows: list[tuple[int, int]],
+    sensitive: list[tuple[int, int]],
+    waveform_samples: int,
+    *,
+    sample_rate: int = SAMPLE_RATE,
+    pad_seconds: float = 0.2,
+    min_gain_seconds: float = MIN_ONSET_GAIN_SECONDS,
+    max_shift_seconds: float = MAX_ONSET_SHIFT_SECONDS,
+) -> list[tuple[int, int]]:
+    """Достраивает готовые окна интервалами чувствительного прохода VAD.
+
+    Начало окна сдвигается назад, если чувствительный проход слышит речь
+    раньше хотя бы на `min_gain_seconds`: меньший сдвиг — вдох перед фразой,
+    и на громкой речи он только менял бы текст на стыках. Сдвиг не заходит в
+    предыдущее окно и не превышает `max_shift_seconds`. Речь, которой нет ни в
+    одном окне, добавляется отдельным окном с обычным запасом.
+    """
+    pad = round(pad_seconds * sample_rate)
+    shift = round(max_shift_seconds * sample_rate)
+    gain = round(min_gain_seconds * sample_rate)
+    result: list[tuple[int, int]] = []
+    previous_end = 0
+    for start, end in windows:
+        # Только интервал, начавшийся после предыдущего окна: тот, что тянется
+        # из него, — мост через паузу внутри сплошной речи, а не тихое начало.
+        onset = min(
+            (s - pad for s, e in sensitive if s - pad < start < e and s >= previous_end),
+            default=start,
+        )
+        if start - onset >= gain:
+            start = max(onset, start - shift, previous_end)
+        result.append((start, end))
+        previous_end = end
+    for start, end in sensitive:
+        if not any(s < end and start < e for s, e in result):
+            result.append((max(0, start - pad), min(waveform_samples, end + pad)))
+    return sorted(result)
+
+
+# Тихому окну модели нужен запас перед речью, даже когда VAD начало нашёл:
+# первое слово с дальнего микрофона часто ниже любого порога. На Golos
+# farfield запас 1 с вернул первое слово в 5 фразах из 500 сверх второго
+# прохода. Громкие окна (диктовки, YouTube: −20…−30 dBFS) не трогаются.
+QUIET_WINDOW_DBFS = -45.0
+QUIET_WINDOW_LEAD_SECONDS = 1.0
+
+
+def lead_quiet_windows(
+    windows: list[tuple[int, int]],
+    waveform,
+    *,
+    sample_rate: int = SAMPLE_RATE,
+    quiet_dbfs: float = QUIET_WINDOW_DBFS,
+    lead_seconds: float = QUIET_WINDOW_LEAD_SECONDS,
+) -> list[tuple[int, int]]:
+    """Отодвигает начало тихих окон на `lead_seconds`, не заходя в соседнее."""
+    import numpy as np
+
+    lead = round(lead_seconds * sample_rate)
+    result: list[tuple[int, int]] = []
+    previous_end = 0
+    for start, end in windows:
+        part = waveform[start:end]
+        rms = float(np.sqrt(np.mean(np.square(part, dtype=np.float64)))) if len(part) else 0.0
+        if 20 * np.log10(max(rms, 1e-12)) < quiet_dbfs:
+            start = max(previous_end, start - lead)
+        result.append((start, end))
+        previous_end = end
+    return result
+
+
+@lru_cache(maxsize=2)
+def _pcm16(path: Path) -> object:
+    """Весь подготовленный WAV в памяти, один раз на процесс.
+
+    Окна раньше нарезались на диск отдельными WAV, по одному на окно, склейку
+    и ретрай. Антивирус проверяет каждое создание и удаление файла, и VAD
+    часовой записи растягивался с 5 секунд до пяти минут
+    (`.memory/defender-slow-temp-cleanup.md`). Теперь окно — это отрезок
+    `prepared.wav`, а звук режется срезом массива. Час записи — 115 МБ int16.
+    """
+    import numpy as np
+
+    with wave.open(str(path), "rb") as source:
+        if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (
+            1,
+            2,
+            SAMPLE_RATE,
+        ):
+            raise MediaToolError(f"Ожидался PCM16 mono {SAMPLE_RATE} Hz: {path}")
+        frames = source.readframes(source.getnframes())
+    return np.frombuffer(frames, dtype="<i2")
+
+
+def _frame_bounds(chunk: AudioChunk, total: int) -> tuple[int, int]:
+    first = max(0, min(total, round(chunk.start * SAMPLE_RATE)))
+    return first, max(first, min(total, round(chunk.end * SAMPLE_RATE)))
+
+
+def chunk_waveform(chunk: AudioChunk) -> object:
+    """Звук окна как float32 16 kHz — то, что принимают все три рантайма ASR."""
+    import numpy as np
+
+    samples = _pcm16(chunk.path.resolve())
+    first, last = _frame_bounds(chunk, len(samples))
+    return samples[first:last].astype(np.float32) / 32768.0
+
+
+def split_audio_chunk(chunk: AudioChunk) -> tuple[AudioChunk, AudioChunk]:
+    """Делит окно пополам по сэмплу, сохраняя абсолютные таймкоды родителя."""
+    first = round(chunk.start * SAMPLE_RATE)
+    last = round(chunk.end * SAMPLE_RATE)
+    if last - first < 2:
+        raise MediaToolError(f"Окно слишком короткое для retry-split: {chunk.start:.3f} с")
+    boundary = (first + last) // 2 / SAMPLE_RATE
+    return (
+        AudioChunk(chunk.sequence, chunk.path, chunk.start, boundary, chunk.speakers),
+        AudioChunk(chunk.sequence, chunk.path, boundary, chunk.end, chunk.speakers),
+    )
+
+
+VAD_TARGET_RMS = 0.1  # −20 dBFS: обычный уровень речи в записи
+VAD_MAX_GAIN = 1000.0  # +60 dB: дальний микрофон даёт −60…−76 dBFS
+VAD_ENVELOPE_SECONDS = 2.0
+
+
+def gain_for_vad(waveform):
+    """Поднимает тихие участки до уровня речи — только для Silero VAD.
+
+    Silero принимает речь на −60…−76 dBFS за тишину, и фраза не доходит до
+    моделей, хотя GigaAM её узнаёт: на Golos farfield 2026-10-04 пустыми
+    вышли 82 фразы из 500. Усиление скользящее, по огибающей ±2 с: общий
+    множитель на файл не поднимает тихого собеседника рядом с громким
+    (480 фраз из 500 против 492). Огибающая — максимум, а не среднее, чтобы
+    фраза поднималась целиком, а не по слогам. Цифровой ноль остаётся нулём,
+    громкое не ослабляется. Модели получают звук без изменений.
+    """
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    hop = SAMPLE_RATE * 30 // 1000
+    frames = len(waveform) // hop
+    if frames == 0:
+        return waveform
+    rms = np.sqrt((waveform[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
+    reach = max(1, round(VAD_ENVELOPE_SECONDS * SAMPLE_RATE / hop))
+    envelope = sliding_window_view(np.pad(rms, reach, mode="edge"), 2 * reach + 1).max(axis=1)
+    gain = np.clip(VAD_TARGET_RMS / np.maximum(envelope, 1e-6), 1.0, VAD_MAX_GAIN)
+    gain = np.repeat(gain, hop)
+    gain = np.pad(gain, (0, len(waveform) - len(gain)), mode="edge")
+    return np.clip(waveform * gain, -1.0, 1.0).astype(waveform.dtype)
+
+
+def split_speech_windows(
+    prepared: Path,
+    *,
+    max_seconds: float = 20.0,
+    pad_seconds: float = 0.2,
+    pack: bool = True,
+    offline: bool = False,
+) -> list[AudioChunk]:
+    """Один раз применяет Silero VAD и создаёт одинаковые окна для всех моделей.
+
+    VAD — первый поход в сеть за весь прогон, и раньше единственный, который
+    шёл мимо `load_with_hub_fallback`: 2026-09-17 прогон встал здесь на
+    неотвечающем Hub при полном кэше, а `--offline` до этого места не доходил
+    вовсе. Теперь загрузка живёт по общим правилам.
+    """
+    from .backends import load_with_hub_fallback  # backends зависит от audio через retry
+
+    try:
+        import onnx_asr
+        from onnx_asr.utils import read_wav_files
+    except ImportError as error:
+        raise MediaToolError("Не установлен onnx-asr с Silero VAD") from error
+
+    waveforms, lengths, sample_rate = read_wav_files(str(prepared), SAMPLE_RATE, "mean")
+    if sample_rate != SAMPLE_RATE:
+        raise MediaToolError(f"Ожидалось {SAMPLE_RATE} Hz, получено {sample_rate} Hz")
+    from .catalog import SILERO_VAD
+    from .weights import fetch
+
+    vad = load_with_hub_fallback(
+        lambda: onnx_asr.load_vad(
+            "silero", fetch(SILERO_VAD).path, providers=["CPUExecutionProvider"]
+        ),
+        offline=offline,
+        label="Silero VAD",
+    )
+    gained = gain_for_vad(waveforms[0])[None, :]
+
+    def speech(threshold: float, exit_threshold: float | None = None) -> list[tuple[int, int]]:
+        return list(
+            next(
+                vad.segment_batch(
+                    gained,
+                    lengths,
+                    SAMPLE_RATE,
+                    threshold=threshold,
+                    neg_threshold=exit_threshold,
+                    min_speech_duration_ms=250,
+                    max_speech_duration_s=max_seconds,
+                    min_silence_duration_ms=300,
+                    speech_pad_ms=0,
+                )
+            )
+        )
+
+    raw_spans = speech(0.5)
+    spans = (
+        pack_speech_spans(
+            raw_spans,
+            int(lengths[0]),
+            max_seconds=max_seconds,
+            pad_seconds=pad_seconds,
+        )
+        if pack
+        else raw_spans
+    )
+    spans = add_quiet_onsets(
+        spans,
+        speech(SENSITIVE_THRESHOLD, SENSITIVE_EXIT_THRESHOLD),
+        int(lengths[0]),
+        pad_seconds=pad_seconds if pack else 0.0,
+    )
+    spans = lead_quiet_windows(spans, waveforms[0])
+    return [
+        AudioChunk(
+            sequence=sequence,
+            path=prepared,
+            start=start / SAMPLE_RATE,
+            end=end / SAMPLE_RATE,
+        )
+        for sequence, (start, end) in enumerate(spans)
+    ]

@@ -1,0 +1,19 @@
+.build/
+.worktrees/
+*.app
+dist/
+__pycache__/
+.pytest_cache/
+.DS_Store
+engine/bench/out/
+.build-*/
+docs/snapshots/
+engine/.venv-llm/
+vendor/
+release-out/
+
+# Рабочее, не для публикации
+drafts/
+.memory/
+PROJECT.md
+engine/.venv/
