@@ -544,7 +544,7 @@ struct KeyCap: View {
             Text(symbol)
                 .font(.system(size: size * 0.36, weight: .regular))
             if let caption {
-                Text(caption).font(.system(size: max(9, size * 0.16), weight: .medium))
+                Text(caption).font(.system(size: max(12, size * 0.18), weight: .medium))  // мельче 12 pt не читается
             }
         }
         .foregroundStyle(Palette.ink)

@@ -104,7 +104,7 @@ public struct OnboardingView: View {
                                    color: Palette.accent, barWidth: 5, spacing: 5, height: 56)
                 .accessibilityHidden(true)),
             title: L("Доступ к микрофону", "Microphone access"),
-            text: L("Mostik записывает только по вашей команде. Звук не уходит с этого Mac.",
+            text: L("Mostik записывает только по вашей команде. Звук не уходит с\u{00A0}этого Mac.",
                     "Mostik records only when you tell it to. Audio never leaves this Mac."),
             rows: [PermissionRow(title: L("Микрофон", "Microphone"),
                                  state: model.permissions.microphone ? .granted : pending(.microphone),
@@ -128,7 +128,7 @@ public struct OnboardingView: View {
         }
         let missing = models.missing
         if missing.isEmpty {
-            return PermissionRow(title: title, state: .granted, hint: L("Модели на этом Mac, без облака.", "Models on this Mac, no cloud."))
+            return PermissionRow(title: title, state: .granted, hint: L("Модели на\u{00A0}этом Mac, без облака.", "Models on this Mac, no cloud."))
         }
         let size = ModelCatalog.size(ModelCatalog.bytesToDownload(missing), russian: L10n.isRussian)
         if missing.contains(where: { models.scheduled($0.key) }) {
@@ -137,7 +137,7 @@ public struct OnboardingView: View {
                                    + L(" · можно идти дальше, загрузка не прервётся", " · you can go on, the download continues"))
         }
         return PermissionRow(title: title, state: models.error == nil ? .notAsked : .denied,
-                             hint: models.error ?? L("Один раз, \(size). Звук распознаётся на этом Mac.", "Once, \(size). Speech is recognized on this Mac."),
+                             hint: models.error ?? L("Один раз, \(size). Звук распознаётся на\u{00A0}этом Mac.", "Once, \(size). Speech is recognized on this Mac."),
                              button: (L("Скачать", "Download"), { models.start(missing.map(\.key)) }))
     }
 
@@ -233,7 +233,7 @@ public struct OnboardingView: View {
                          "Click the field, hold \(HoldKeys.name(model.settings.holdKey)), say a sentence and let go."))
             // Клавиша диктовки — здесь, а не только в Настройках: ею сейчас и пробуют.
             HStack(spacing: DS.Space.s) {
-                Text(L("Клавиша диктовки", "Dictation key")).font(TType.body).foregroundStyle(Palette.ink)
+                Text(L("Клавиша диктовки", "Dictation key")).font(TType.callout).foregroundStyle(Palette.inkSecondary)
                 Spacer(minLength: DS.Space.s)
                 KeyPicker(selection: Binding(get: { model.settings.holdKey },
                                              set: { key in var s = model.settings; s.holdKey = key; model.onUpdateSettings(s) }))

@@ -72,14 +72,15 @@ public final class TmuxClient: @unchecked Sendable {
         return Tmux.parseClients(result.output)
     }
 
-    /// Панели с агентами и корнем проекта агента.
-    public func agentPanes(names: Set<String>) -> [TmuxAgentPane] {
+    /// Панели с агентами; корень проекта — только при `projects`: поиск `.git` читает папку агента,
+    /// а она может лежать в «Документах», и macOS спросит доступ без объяснения.
+    public func agentPanes(names: Set<String>, projects: Bool) -> [TmuxAgentPane] {
         let panes = panes()
         guard !panes.isEmpty else { return [] }
         let processes = ProjectDetector.snapshot()
         return Tmux.agentPanes(panes, processes: processes, names: names).map { found in
             var pane = found
-            if let cwd = ProjectDetector.cwd(pid: found.agentPID) ?? (found.pane.path.isEmpty ? nil : found.pane.path) {
+            if projects, let cwd = ProjectDetector.cwd(pid: found.agentPID) ?? (found.pane.path.isEmpty ? nil : found.pane.path) {
                 pane.project = ProjectResolver.projectRoot(of: cwd)
             }
             return pane
