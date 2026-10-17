@@ -86,7 +86,7 @@ final class AgentVoiceController {
         let names = model.settings.agentPolicy.agentCLIs
         let tmux = self.tmux
         Task {
-            let panes = await Task.detached { tmux.agentPanes(names: names) }.value
+            let panes = await Task.detached { tmux.agentPanes(names: names, projects: false) }.value
             model.agentVoice.panes = panes.map { .init(id: $0.pane.id, title: $0.title, label: $0.pane.label) }
         }
     }
@@ -105,9 +105,10 @@ final class AgentVoiceController {
             let pid = app?.processIdentifier
             let bundlePath = app?.bundleURL?.path
             let names = policy.agentCLIs
+            let projects = model.settings.codeTerms  // корень проекта нужен только упоминаниям файлов
             let tmux = self.tmux
             let (panes, focus) = await Task.detached { () -> ([TmuxAgentPane], (hasClient: Bool, session: String?)) in
-                let panes = tmux.agentPanes(names: names)
+                let panes = tmux.agentPanes(names: names, projects: projects)
                 guard isTerminal, let pid, !panes.isEmpty else { return (panes, (false, nil)) }
                 return (panes, tmux.focusedSession(appPID: pid, bundlePath: bundlePath))
             }.value
@@ -192,7 +193,8 @@ final class AgentVoiceController {
                 }
                 return (session, summary)
             }.value
-            let project = event.cwd.flatMap { ProjectResolver.projectRoot(of: $0) } ?? event.cwd
+            // Без режима разработчика — имя папки из пути, без чтения диска: поиск `.git` в «Документах» вызвал бы запрос macOS.
+            let project = (model.settings.codeTerms ? event.cwd.flatMap { ProjectResolver.projectRoot(of: $0) } : nil) ?? event.cwd
             let text = AgentEvents.announcement(event, project: project, session: session, summary: summary,
                                                 russian: L10n.isRussian)
             await speakWhenFree(text, kind: event.kind)

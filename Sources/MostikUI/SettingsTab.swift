@@ -613,8 +613,8 @@ struct SettingsTab: View {
         FormToggle(title: L("Термины из кода", "Terms from code"),
                    hint: L("Для разработчиков: словарь из репозитория, открытого в редакторе или терминале.",
                            "For developers: glossary from the repository open in your editor or terminal."),
-                   details: L("Выключено — словарь берётся только из ваших папок с документами, календаря и личного словаря. В репозитории тысячи имён из кода, и с ними русская речь чаще превращается в короткие английские слова.",
-                              "When off, the glossary comes only from your document folders, calendar and personal glossary. A repository holds thousands of code names, and with them speech more often turns into short English words."),
+                   details: L("Выключено — словарь берётся только из ваших папок с документами, календаря и личного словаря. В репозитории тысячи имён из кода, и с ними русская речь чаще превращается в короткие английские слова. Если проект лежит в «Документах», на «Рабочем столе» или в «Загрузках», macOS один раз спросит доступ к этой папке: Mostik читает её, чтобы найти корень репозитория.",
+                              "When off, the glossary comes only from your document folders, calendar and personal glossary. A repository holds thousands of code names, and with them speech more often turns into short English words. If the project is in Documents, Desktop or Downloads, macOS asks once for access to that folder: Mostik reads it to find the repository root."),
                    isOn: bind(\.codeTerms))
         if model.settings.codeTerms {
             FormDivider()
@@ -868,15 +868,15 @@ struct KeyPicker: View {
             ForEach(keys, id: \.id) { key in
                 let on = selection == key.id
                 Button { withAnimation(Motion.quick) { selection = key.id } } label: {
-                    KeyCap(symbol: key.symbol, caption: key.caption, size: 34, pressed: on)
+                    KeyCap(symbol: key.symbol, caption: key.caption, size: 40, pressed: on)
                         .overlay {
                             // Выбранная клавиша — обводка акцентом по контуру самой клавиши.
-                            RoundedRectangle(cornerRadius: 34 * 0.18, style: .continuous)
+                            RoundedRectangle(cornerRadius: 40 * 0.18, style: .continuous)
                                 .strokeBorder(Palette.accent, lineWidth: 1.5)
                                 .offset(y: on ? 2 : 0)
                                 .opacity(on ? 1 : 0)
                         }
-                        .padding(.vertical, 3)  // нижняя губа клавиши и зона нажатия 40 pt
+                        .padding(.vertical, 3)  // нижняя губа клавиши и зона нажатия 46 pt
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

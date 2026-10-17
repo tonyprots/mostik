@@ -38,7 +38,7 @@ struct OnboardingModelStep: View {
                                "Nothing leaves this Mac. The model downloads while you try a dictation."))
                 Hairline()
                 option(.claude, title: L("Claude/Codex по подписке", "Claude/Codex on your subscription"),
-                       hint: L("Нужен Claude Code или Codex на этом Mac. Тексты диктовок и расшифровки встреч уходят в Anthropic или OpenAI, звук — никогда.",
+                       hint: L("Нужен Claude Code или Codex на\u{00A0}этом Mac. Тексты диктовок и расшифровки встреч уходят в Anthropic или OpenAI, звук — никогда.",
                                "Needs Claude Code or Codex on this Mac. Dictated text and meeting transcripts go to Anthropic or OpenAI, never audio.")
                            + (model.polishAvailable["claude"] == false
                               ? L(" Сейчас ни того, ни другого нет: установите один, войдите и перезапустите Mostik.",
@@ -62,7 +62,7 @@ struct OnboardingModelStep: View {
                 }
                 .buttonStyle(.plain)
                 if split { separate }
-                Label(L("Встречи с пометкой «Только на этом Mac» обрабатывает только локальная модель.",
+                Label(L("Встречи с пометкой «Только на\u{00A0}этом Mac» обрабатывает только локальная модель.",
                         "“This Mac only” meetings are processed only by the on-device model."),
                       systemImage: "lock")
                     .font(TType.caption)
