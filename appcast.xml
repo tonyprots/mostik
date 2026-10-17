@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><!-- Лента обновлений Mostik для Sparkle 2. Шаблон: scripts/release.sh копирует его в папку выпуска
+     и добавляет запись на каждую версию (подпись EdDSA из sign_update, требование подписи приложения —
+     mostik:designatedRequirement). Выкладывает ленту scripts/publish-release.sh — в ветку gh-pages,
+     по адресу MOSTIK_FEED_URL из release/release.conf. --><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:mostik="urn:app.mostik:appcast" version="2.0">
+    <channel>
+        <title>Mostik</title>
+        <description>Обновления Mostik</description>
+        <language>ru</language>
+        <!-- items -->
+        <item>
+            <title>Mostik 0.1.0</title>
+            <pubDate>Sat, 17 Oct 2026 17:59:36 GMT</pubDate>
+            <sparkle:version>357</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
+            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.0/Mostik-0.1.0.dmg" length="195734559" type="application/octet-stream" sparkle:edSignature="oaiwcL//+E8dt77VWAElpk4Uqh4VtrDCpybhmARfsGm+veWkFx4DkBIO8tLOpjBC43chppg0Z+S50lbfkUnJDA==" />
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: ib23R/lnxCVAoJ1zjoPOWuiOHSGIvV3VnFqOVR46kpDct2KCWdSXA5yUYueQmuAg04LXTJUA6WxYZLL+a3eTDQ==
+length: 1951
+-->
