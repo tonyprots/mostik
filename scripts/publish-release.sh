@@ -37,6 +37,9 @@ conf() {
 }
 FEED_URL="$(conf MOSTIK_FEED_URL)"
 REPO="$(conf MOSTIK_GITHUB_REPO)"
+AUTHOR_NAME="$(conf MOSTIK_PUBLIC_AUTHOR_NAME)"
+AUTHOR_EMAIL="$(conf MOSTIK_PUBLIC_AUTHOR_EMAIL)"
+[ -n "$AUTHOR_NAME" ] && [ -n "$AUTHOR_EMAIL" ] || die "в release/release.conf нет MOSTIK_PUBLIC_AUTHOR_NAME/EMAIL — ленту не от кого коммитить"
 OUT="${MOSTIK_RELEASE_OUT:-$ROOT/release-out}"
 SPARKLE_ACCOUNT="${SPARKLE_ACCOUNT:-app.mostik.mac}"
 SIGN_UPDATE="$ROOT/vendor/sparkle/current/bin/sign_update"
@@ -197,7 +200,7 @@ cp "$FEED" "$PAGES_DIR/appcast.xml"
 cp "$INSTALLER" "$PAGES_DIR/install.sh"
 touch "$PAGES_DIR/.nojekyll"  # Pages отдаёт файлы как есть, без Jekyll
 git -C "$PAGES_DIR" add appcast.xml install.sh .nojekyll
-git -C "$PAGES_DIR" commit -q -m "Лента: Mostik $VERSION"
+git -C "$PAGES_DIR" -c user.name="$AUTHOR_NAME" -c user.email="$AUTHOR_EMAIL" commit -q -m "Лента: Mostik $VERSION"
 gh auth setup-git >/dev/null 2>&1 || true
 git -C "$PAGES_DIR" push -q origin gh-pages
 rm -rf "$PAGES_DIR"
