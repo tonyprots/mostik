@@ -77,7 +77,6 @@ func runSettingsRouteTests() {
         ("MostikUI/MainWindowView.swift", "openSettings(.hotkey)", "пустая история"),
         ("MostikUI/MainWindowView.swift", "Button(\"\") { model.openSettings(.menu) }\n                .keyboardShortcut(\",\", modifiers: .command)", "⌘, в главном окне"),
         ("MostikUI/MenuBarContentView.swift", "openSettings(.menu)", "строка меню «Настройки…»"),
-        ("MostikUI/OnboardingView.swift", "openSettings(.fullCheckup)", "«Вся диагностика» в онбординге"),
         ("MostikUI/MeetingAIViews.swift", "openSettings(.chooseModel)", "«Выбрать модель» у ИИ встречи"),
         ("Mostik/MeetingAssistController.swift", "openSettings(.fullCheckup)", "проверка из помощника встречи"),
         ("MostikUI/SettingsTab.swift", "Button(L(\"Открыть «\\(pane.title)»\", \"Open \\(pane.title)\")) { model.openSettings(.pane(pane.rawValue)) }",

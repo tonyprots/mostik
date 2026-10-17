@@ -9,8 +9,23 @@ English summary follows each release.
 
 ### Словарь
 - Термины из кода стали режимом для разработчиков и по умолчанию выключены — и в новой установке, и после обновления. Раньше Mostik брал словарь из репозитория, открытого в терминале или редакторе: тысячи имён из кода перетягивали русские слова и фразы в короткие английские термины. Теперь словарь — это ваши папки с документами и заметками, календарь и личный словарь. Включить: Настройки → Приватность и данные → Дополнительно → «Термины из кода»; там же автопоиск проекта и запасная папка. Если выбрать папку проекта в «Словаре», режим включится сам.
+- В папках с документами Mostik больше не читает код: пропускает исходники (`.js`, `.py`, `.swift` и другие), вложенные репозитории и блоки кода внутри заметок.
+- Mostik больше не запрашивает доступ к «Документам» при каждой диктовке. Запрос шёл от автопоиска проекта, который теперь живёт в режиме для разработчиков.
 
-English: terms from code are now a developer option, off by default for new installs and updates. The glossary comes from your document folders, calendar and personal glossary; the repository open in your terminal or editor is no longer scanned unless you turn on Settings → Privacy & Data → Advanced → “Terms from code”.
+### Диктовка
+- После диктовки остаётся одна всплывашка «N слов под вопросом». Вторая карточка, «Слово распознано не так?», появляется, только если сомнений нет.
+- Исправление слова в Mostik попадает и в сам текст, если после вставки его никто не трогал. Mostik ждёт, пока вы вернётесь в то приложение, отменяет свою вставку и вставляет исправленный вариант. Если текст в поле успели изменить, Mostik его не трогает и пишет «Исправлено только в Mostik».
+- Клик по подсвеченному слову в диктовке прокручивает к нему в списке «Слова под вопросом».
+
+### Онбординг
+- Вместо пары «Продолжить» / «Позже» осталась одна кнопка «Дальше». Убрана кнопка «Проверить всё подробно».
+- Клавишу диктовки можно выбрать на последнем шаге. Там же стоит «Запускать Mostik при входе в систему», по умолчанию включено.
+- Шаги про встречи и модель называются «Запись встреч» и «Сводки и чистый текст» и объясняют, что дают.
+
+### Модель
+- Вместо Claude Code подойдёт Codex: если Claude Code не установлен, сводки и чистка текста идут через `codex exec`. В интерфейсе этот вариант называется «Claude/Codex».
+
+English: terms from code are now a developer option, off by default for new installs and updates. The glossary comes from your document folders, calendar and personal glossary; the repository open in your terminal or editor is no longer scanned unless you turn on Settings → Privacy & Data → Advanced → “Terms from code”. Document folders skip source files and code blocks. One popup after a dictation instead of two. Fixing a word also fixes the inserted text when it is untouched. Clicking a highlighted word jumps to its row. Onboarding has a single “Next” button and lets you pick the dictation key. Codex works as a fallback for Claude Code.
 
 ## 0.1.0, дополнения к опубликованной сборке — 2026-10-17
 

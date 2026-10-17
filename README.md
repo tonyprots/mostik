@@ -193,8 +193,8 @@ Mostik asks only for what the features you turn on need.
 
 - **No account, no analytics, no telemetry**, no servers of our own.
 - **Speech recognition runs on your Mac.** Dictation and meeting audio is never sent anywhere.
-- **Text reaches the cloud only if you opt in**, and only through `claude -p`: Claude Code that you installed and
-  signed in to yourself. With the local model, polish and summaries work offline.
+- **Text reaches the cloud only if you opt in**, and only through `claude -p` or `codex exec`: Claude Code or Codex that you
+  installed and signed in to yourself. With the local model, polish and summaries work offline.
 - **What does go online:** the model download from Hugging Face when you click, a daily update check (your IP address
   and the Mostik version) to GitHub Pages, and your Google or Yandex calendar if you connect it.
 - History is kept for 7 days by default; dictation audio for one day, so you can re-transcribe.

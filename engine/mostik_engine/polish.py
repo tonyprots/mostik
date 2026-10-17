@@ -774,24 +774,40 @@ class MlxBackend(PolishBackend):
 
 
 # Подсказка вместо «не найден в PATH»: на чистом Mac человеку нужно, как поставить.
-CLAUDE_MISSING = ("Claude Code не установлен. Установите в Терминале: curl -fsSL https://claude.ai/install.sh | bash, "
-                  "войдите командой claude и перезапустите Mostik.")
+CLAUDE_MISSING = ("Не найдены ни Claude Code, ни Codex. Установите один из них в Терминале "
+                  "(curl -fsSL https://claude.ai/install.sh | bash или npm i -g @openai/codex), "
+                  "войдите и перезапустите Mostik.")
+# Codex — запасной путь того же пункта «Claude/Codex по подписке»: усилие рассуждений низкое,
+# `minimal` новые модели OpenAI не принимают.
+CODEX_EFFORT = "low"
 
 
-def find_claude(env: dict | None = None) -> str | None:
-    """`claude` в PATH, затем в ~/.local/bin, ~/.claude/local, nvm и типовых местах Homebrew
-    (у GUI-приложения PATH короткий)."""
+def _find_cli(name: str, env: dict | None = None, extra: tuple[Path, ...] = ()) -> str | None:
+    """CLI в PATH, затем в ~/.local/bin, nvm и типовых местах Homebrew (у GUI-приложения PATH короткий)."""
     env = os.environ if env is None else env
-    found = shutil.which("claude", path=env.get("PATH"))
+    found = shutil.which(name, path=env.get("PATH"))
     if found:
         return found
     home = Path(env.get("HOME") or Path.home())
-    nvm = sorted((home / ".nvm" / "versions" / "node").glob("*/bin/claude"), reverse=True)
-    for candidate in (home / ".local" / "bin" / "claude", home / ".claude" / "local" / "claude", *nvm,
-                      Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")):
+    nvm = sorted((home / ".nvm" / "versions" / "node").glob(f"*/bin/{name}"), reverse=True)
+    for candidate in (home / ".local" / "bin" / name, *extra, *nvm,
+                      Path("/opt/homebrew/bin") / name, Path("/usr/local/bin") / name):
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
+
+
+def find_claude(env: dict | None = None) -> str | None:
+    home = Path((os.environ if env is None else env).get("HOME") or Path.home())
+    return _find_cli("claude", env, (home / ".claude" / "local" / "claude",))
+
+
+def find_codex(env: dict | None = None) -> str | None:
+    return _find_cli("codex", env)
+
+
+def is_codex(path: str) -> bool:
+    return Path(path).name == "codex"
 
 
 _ACTIVE: set[int] = set()
@@ -847,7 +863,8 @@ def run_isolated(command: list[str], stdin_text: str, timeout: float, env: dict 
 
 
 class ClaudeCliBackend(PolishBackend):
-    """G7: `claude -p` по подписке пользователя. Текст уходит в облако Anthropic."""
+    """G7: `claude -p` по подписке пользователя, а без Claude Code — `codex exec` по подписке OpenAI.
+    Текст уходит в облако Anthropic или OpenAI. Имя бэкенда одно — `claude`: это пункт «Claude/Codex»."""
 
     name = "claude"
 
@@ -856,13 +873,23 @@ class ClaudeCliBackend(PolishBackend):
         self.model = model
 
     def path(self) -> str | None:
-        return self.executable or find_claude()
+        return self.executable or find_claude() or find_codex()
 
     def status(self) -> dict:
         path = self.path()
         if path is None:
             return {"available": False, "reason": "not_found", "message": CLAUDE_MISSING}
-        return {"available": True, "path": path, "model": self.model}
+        return {"available": True, "path": path, "model": "codex" if is_codex(path) else self.model}
+
+    def invocation(self, path: str, system: str, user: str) -> tuple[list[str], str]:
+        """Команда и stdin. У Codex нет системного промпта отдельно — он идёт в начале сообщения."""
+        if is_codex(path):
+            return [
+                path, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules",
+                "--sandbox", "read-only", "--color", "never",
+                "-c", f'model_reasoning_effort="{CODEX_EFFORT}"', "-",
+            ], f"{system}\n\n{user}"
+        return self.command(path, system), user
 
     def command(self, path: str, system: str) -> list[str]:
         return [
@@ -898,7 +925,8 @@ class ClaudeCliBackend(PolishBackend):
         path = self.path()
         if path is None:
             raise PolishUnavailable(CLAUDE_MISSING)
-        return run_isolated(self.command(path, system), user, timeout, env=self.environment())
+        command, stdin = self.invocation(path, system, user)
+        return run_isolated(command, stdin, timeout, env=self.environment())
 
     # Шаг 1, п. 6 пакета «Плавность и быстродействие»: процесс `claude -p` поднимается на старте
     # диктовки (запуск CLI ~1 с), а текст уходит в его stdin только на отпускании.
@@ -906,8 +934,8 @@ class ClaudeCliBackend(PolishBackend):
 
     def open_stream(self, request: PolishRequest) -> PolishStream:
         path = self.path()
-        if path is None:
-            return PolishStream(self, request)
+        if path is None or is_codex(path):
+            return PolishStream(self, request)  # Codex заранее не поднимаем: промпт целиком на отпускании
         return ClaudeStream(self, request, path)
 
 

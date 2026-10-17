@@ -2084,7 +2084,10 @@ final class AppController {
         // отказ снимает отметку и больше не предлагается.
         model.onAcceptDoubt = { [weak self] entryID, heard, canonical in
             guard let self, let entry = self.model.history.first(where: { $0.id == entryID }) else { return }
-            self.replaceEntry(DoubtResolution.accept(entry, heard: heard, canonical: canonical))
+            let updated = DoubtResolution.accept(entry, heard: heard, canonical: canonical)
+            self.replaceEntry(updated)
+            // Текст уже вставлен: поменять и там, когда пользователь вернётся в то приложение.
+            self.delivery.queueFix(entryID: entryID, text: updated.insertedText)
             let heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
             let canonical = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !canonical.isEmpty else { return }

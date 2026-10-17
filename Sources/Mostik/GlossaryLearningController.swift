@@ -122,14 +122,16 @@ final class GlossaryLearningController {
 
     // MARK: L2 — «Запомнить написание»
 
-    /// Карточка после вставки — только если в диктовке были сомнения или правки словаря:
-    /// тогда есть что запоминать, а на каждой вставке кнопка была бы шумом.
+    /// Карточка после вставки — только если в диктовке были правки словаря, а сомнений нет:
+    /// с сомнениями плашка сама ведёт в диктовку («2 слова под вопросом ›»), и вторая
+    /// всплывашка о том же была лишней (Антон). На каждой вставке кнопка была бы шумом.
     private func scheduleChip(for entryID: String) {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let self, self.learning.prompt == nil,
                   let entry = self.model.history.first(where: { $0.id == entryID }),
-                  !entry.doubts.isEmpty || !entry.corrections.isEmpty else { return }
+                  LearnPromptPolicy.showsSpellingChip(doubts: entry.doubts.count,
+                                                      corrections: entry.corrections.count) else { return }
             self.learning.spellingChipEntry = entryID
             self.presentPanel(hideAfter: 5)
         }

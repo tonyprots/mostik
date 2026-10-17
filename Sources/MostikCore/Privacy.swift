@@ -198,7 +198,7 @@ public enum EngineEnvironment {
     /// свои настройки (`MOSTIK_*`), офлайн и кэш моделей (`HF_*`, `TRANSCRIBER_*` — в выпуске снимаются ниже),
     /// вход и сеть `claude` (ключ, прокси, корпоративный сертификат). Без `NODE_OPTIONS`, `BASH_ENV`, toolchain.
     public static let engineKeys: Set<String> = ToolEnvironment.allowed.union([
-        "PATH", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+        "PATH", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
         "http_proxy", "https_proxy", "no_proxy", "all_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
     ])
     public static let enginePrefixes = ["LC_", "MOSTIK_", "TRANSCRIBER_", "HF_", "TRANSFORMERS_", "TOKENIZERS_", "ANTHROPIC_"]

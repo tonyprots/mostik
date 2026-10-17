@@ -522,12 +522,12 @@ struct MeetingUnlockConfirm: ViewModifier {
 
     func body(content: Content) -> some View {
         content.confirmationDialog(L("Открыть встречу агентам?", "Open this meeting to agents?"), isPresented: $isPresented) {
-            Button(L("Открыть агентам, скриптам и Claude", "Open to agents, scripts and Claude")) {
+            Button(L("Открыть агентам, скриптам и Claude/Codex", "Open to agents, scripts and Claude/Codex")) {
                 extras.onSetSensitive(meeting, false)
             }
         } message: {
-            Text(L("Расшифровку смогут читать агенты, получат ваши скрипты, а для сводки она уйдёт в Claude. Вернуть «Только на этом Mac» можно в «…».",
-                   "Agents can read the transcript, your scripts receive it, and it goes to Claude for the summary. Switch back to “This Mac only” in “…”."))
+            Text(L("Расшифровку смогут читать агенты, получат ваши скрипты, а для сводки она уйдёт в Claude/Codex. Вернуть «Только на этом Mac» можно в «…».",
+                   "Agents can read the transcript, your scripts receive it, and it goes to Claude/Codex for the summary. Switch back to “This Mac only” in “…”."))
         }
     }
 }

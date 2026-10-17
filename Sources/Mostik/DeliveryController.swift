@@ -32,10 +32,20 @@ final class DeliveryController {
     /// ⌃⌘K — следующая диктовка — команда-намерение (D6).
     var onIntentHotkey: () -> Void = {}
 
+    /// Исправленный в Mostik текст последней вставки: ждёт возвращения в то приложение (`TextFixPlanner`).
+    private var pendingFix: PendingTextFix?
+    private var activationObserver: NSObjectProtocol?
+
     init(model: AppModel, paster: Paster) {
         self.model = model
         self.paster = paster
         hotkeys = DeliveryHotkeys { [weak self] event in self?.hotkey(event) }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let bundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            MainActor.assumeIsolated { self?.appActivated(bundleID) }
+        }
     }
 
     func start() { hotkeys.start() }
@@ -55,7 +65,7 @@ final class DeliveryController {
 
     /// Вставить и запомнить для отката. `raw` — исходник для замены и буфера.
     func deliver(text: String, raw: String, entryID: String, expectedBundleID: String?,
-                 start: FieldSnapshot?, onPosted: (() -> Void)? = nil) async -> DeliveryReport {
+                 start: FieldSnapshot?, onPosted: (() -> Void)? = nil, notify: Bool = true) async -> DeliveryReport {
         // Шаг 1, п. 3: машина свободна сразу после ⌘V, и следующая вставка может прийти, пока
         // прошлая ещё проверяет поле и возвращает буфер. Вставки идут строго по очереди.
         let previous = tail
@@ -66,12 +76,12 @@ final class DeliveryController {
         }
         tail = Task { _ = await task.value }
         let report = await task.value
-        remember(report, entryID: entryID, raw: raw)
+        remember(report, entryID: entryID, raw: raw, notify: notify)
         return report
     }
     private var tail: Task<Void, Never>?
 
-    private func remember(_ report: DeliveryReport, entryID: String, raw: String) {
+    private func remember(_ report: DeliveryReport, entryID: String, raw: String, notify: Bool = true) {
         guard report.outcome == .inserted, let field = report.before else { return }
         let check = report.check ?? .unknown
         last = InsertionRecord(entryID: entryID, bundleID: field.bundleID, elementToken: field.elementToken,
@@ -79,7 +89,70 @@ final class DeliveryController {
                                insertedText: report.sent, rawText: raw, check: check)
         // A7: сразу после вставки Esc значит «верни как было».
         hotkeys.escapeArmedUntil = Date().addingTimeInterval(RevertPlanner.escapeWindow)
-        if let last { onInserted(last) }
+        pendingFix = nil
+        if notify, let last { onInserted(last) }
+    }
+
+    // MARK: исправление во вставленном тексте
+
+    /// Слово поправили в Mostik: исправленный текст записи ждёт, пока пользователь вернётся туда,
+    /// куда вставляли. Не к последней вставке или текст тот же — ничего не делаем.
+    func queueFix(entryID: String, text: String) {
+        let fix = PendingTextFix(entryID: entryID, text: text)
+        guard TextFixPlanner.applies(fix, to: last) else { return }
+        pendingFix = fix
+        AppLog.shared.event("delivery", "fix queued")
+        // Поправили, не уходя из того приложения (карточка над плашкой) — сразу.
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == last?.bundleID { scheduleFix() }
+    }
+
+    private func appActivated(_ bundleID: String?) {
+        guard pendingFix != nil, let bundleID, bundleID == last?.bundleID else { return }
+        scheduleFix()
+    }
+
+    /// Приложение вернуло фокус полю не сразу — ждём чуть-чуть.
+    private func scheduleFix() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            await self?.applyPendingFix()
+        }
+    }
+
+    private func applyPendingFix() async {
+        guard !isBusy(), let fix = pendingFix, let record = last else { return }
+        let current = FocusedField.snapshot()
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        switch TextFixPlanner.plan(fix, record: record, current: current, frontBundleID: front) {
+        case .nothing:
+            pendingFix = nil
+        case .wait:
+            return
+        case let .refuse(reason):
+            pendingFix = nil
+            AppLog.shared.event("delivery", "fix refused \(reason.rawValue)")
+            notice(refusalTitle(reason), t("Исправлено только в Mostik", "Fixed in Mostik only"))
+        case .replace:
+            pendingFix = nil
+            paster.undo()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            let now = FocusedField.state()
+            guard TextFixPlanner.undoRestored(before: record.before, now: now) else {
+                // ⌘Z не сработал — текст как был. Сработал, но курсор не там — вернуть вставку.
+                if now?.value == record.before?.value { paster.redo() }
+                AppLog.shared.event("delivery", "fix undo mismatch")
+                notice(t("Текст не исправлен", "Text not fixed"), t("Исправлено только в Mostik", "Fixed in Mostik only"))
+                return
+            }
+            let report = await deliver(text: fix.text, raw: record.rawText, entryID: record.entryID,
+                                       expectedBundleID: record.bundleID, start: nil, notify: false)
+            if report.outcome == .inserted, var entry = model.history.first(where: { $0.id == record.entryID }) {
+                entry.insertedText = report.sent
+                entry.pasteCheck = report.check?.rawValue
+                replaceEntry(entry)
+            }
+            show(report, summary: t("Исправлено в тексте", "Fixed in the text"))
+        }
     }
 
     // MARK: сочетания

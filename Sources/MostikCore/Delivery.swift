@@ -238,6 +238,64 @@ public enum RevertPlanner {
     }
 }
 
+// MARK: исправление слова во вставленном тексте
+
+/// Слово поправили в Mostik («Запомнить», принятая подсказка), а текст уже вставлен в другое
+/// приложение. Пока пользователь в Mostik, исправленный текст ждёт; когда он вернётся в то
+/// приложение, вставка меняется на исправленную — ⌘Z и вставка заново, тем же путём, что откат R4.
+/// Чужое не портим: только последняя вставка, только пока текст поля ровно такой, каким его
+/// оставила вставка (курсор двигать можно — он не правка), и не дольше `window`.
+public struct PendingTextFix: Equatable, Sendable {
+    public var entryID: String
+    public var text: String
+    public var at: Date
+    public init(entryID: String, text: String, at: Date = Date()) {
+        self.entryID = entryID; self.text = text; self.at = at
+    }
+}
+
+public enum TextFixPlan: Equatable, Sendable {
+    /// Нечего делать: нет исправления, оно не к последней вставке или текст тот же.
+    case nothing
+    /// Ещё не то приложение впереди — ждём.
+    case wait
+    /// Поле как после вставки: ⌘Z, затем исправленный текст.
+    case replace
+    /// Поле трогали, сменили или не прочитать — текст не трогаем, исправление остаётся в Mostik.
+    case refuse(RevertRefusal)
+}
+
+public enum TextFixPlanner {
+    /// Сколько после вставки её ещё можно поправить из Mostik.
+    public static let window: TimeInterval = 600
+
+    /// Исправление годится для этой вставки: та же запись, текст другой и не пустой, вставка дошла.
+    public static func applies(_ fix: PendingTextFix?, to record: InsertionRecord?) -> Bool {
+        guard let fix, let record, record.check != .notInserted, fix.entryID == record.entryID else { return false }
+        let text = fix.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && fix.text != record.insertedText
+    }
+
+    public static func plan(_ fix: PendingTextFix?, record: InsertionRecord?, current: FieldSnapshot?,
+                            frontBundleID: String?, now: Date = Date()) -> TextFixPlan {
+        guard applies(fix, to: record), let record else { return .nothing }
+        if now.timeIntervalSince(record.at) > window { return .refuse(.expired) }
+        if frontBundleID != record.bundleID { return .wait }
+        if record.engine == .native, let a = record.elementToken, let b = current?.elementToken, a != b {
+            return .refuse(.focusChanged)
+        }
+        guard let after = record.after, let value = current?.value else { return .refuse(.unreadable) }
+        return value == after.value ? .replace : .refuse(.fieldChanged)
+    }
+
+    /// После ⌘Z поле должно стать ровно таким, каким было до вставки, — с тем же курсором:
+    /// иначе исправленный текст лёг бы не туда.
+    public static func undoRestored(before: FieldState?, now: FieldState?) -> Bool {
+        guard let before, let now else { return false }
+        return before == now
+    }
+}
+
 // MARK: R5 — восстановление
 
 public enum RecentDictations {

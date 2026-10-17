@@ -232,9 +232,17 @@ struct DictationDetail: View {
     let entry: HistoryEntry
     @State private var copied = false
     @State private var confirmDelete = false
+    /// Строка слова под вопросом, к которой только что прокрутили по щелчку в тексте.
+    @State private var flashedDoubt: Int?
     @Environment(\.mostikSnapshot) private var snapshot
 
     var body: some View {
+        ScrollViewReader { proxy in
+            scroll(proxy)
+        }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy) -> some View {
         MostikScroll {
             VStack(alignment: .leading, spacing: DS.Space.l) {
                 VStack(alignment: .leading, spacing: DS.Space.xs) {
@@ -243,7 +251,15 @@ struct DictationDetail: View {
                 }
                 VStack(alignment: .leading, spacing: DS.Space.s) {
                     // SF 15, межстрочный ≈ 1,35: 18 pt своей строки + 2 pt.
-                    DoubtHighlightedText(text: insertedBody, doubts: entry.doubts)
+                    // Щелчок по подсвеченному слову — к его строке в «Словах под вопросом».
+                    DoubtHighlightedText(text: insertedBody, doubts: entry.doubts) { index in
+                        withAnimation(Motion.spring) { proxy.scrollTo(Self.doubtRowID(index), anchor: .center) }
+                        flashedDoubt = index
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            if flashedDoubt == index { withAnimation(Motion.quick) { flashedDoubt = nil } }
+                        }
+                    }
                         .font(TType.reading)
                         .lineSpacing(2)
                         .foregroundStyle(Palette.ink)
@@ -381,6 +397,9 @@ struct DictationDetail: View {
                 ForEach(Array(entry.doubts.enumerated()), id: \.offset) { i, doubt in
                     if i > 0 { Hairline(inset: DS.Space.s) }
                     doubtRow(doubt)
+                        .background(flashedDoubt == i ? Palette.doubtSoft : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: DS.Radius.card - 2, style: .continuous))
+                        .id(Self.doubtRowID(i))
                 }
             }
             .padding(DS.Space.xxs)
@@ -388,6 +407,8 @@ struct DictationDetail: View {
             .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Palette.edge))
         }
     }
+
+    static func doubtRowID(_ index: Int) -> String { "doubt-\(index)" }
 
     private func doubtRow(_ doubt: Doubt) -> some View {
         HStack(alignment: .center, spacing: DS.Space.s) {
@@ -489,9 +510,21 @@ struct DictationDetail: View {
 struct DoubtHighlightedText: View {
     let text: String
     let doubts: [Doubt]
+    /// Щелчок по подсвеченному слову: индекс сомнения в `doubts`. nil — слова не нажимаются.
+    var onTap: ((Int) -> Void)? = nil
+
+    /// Подсвеченное слово — ссылка `mostik-doubt:<индекс>`: так SwiftUI отдаёт щелчок по куску текста.
+    static let scheme = "mostik-doubt"
 
     var body: some View {
         Text(attributed)
+            .tint(Palette.doubt)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == Self.scheme, let index = Int(url.absoluteString.dropFirst(Self.scheme.count + 1)),
+                      doubts.indices.contains(index) else { return .systemAction }
+                onTap?(index)
+                return .handled
+            })
             .accessibilityLabel(text)
             .accessibilityHint(doubts.isEmpty ? "" : L("Слова под вопросом: ", "Unsure words: ")
                                + doubts.map { $0.suggestion.isEmpty ? $0.heard : $0.suggestion }.joined(separator: ", "))
@@ -499,9 +532,10 @@ struct DoubtHighlightedText: View {
 
     private var attributed: AttributedString {
         var result = AttributedString(text)
-        for doubt in doubts {
+        for (index, doubt) in doubts.enumerated() {
             for needle in [doubt.suggestion, doubt.heard] where !needle.trimmingCharacters(in: .whitespaces).isEmpty {
                 guard let range = result.range(of: needle, options: .caseInsensitive) else { continue }
+                if onTap != nil { result[range].link = URL(string: "\(Self.scheme):\(index)") }
                 result[range].foregroundColor = Palette.doubt
                 result[range].backgroundColor = Palette.doubtSoft
                 result[range].underlineStyle = Text.LineStyle(pattern: .dot, color: Palette.doubt)

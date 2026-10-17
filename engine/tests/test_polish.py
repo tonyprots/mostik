@@ -497,3 +497,18 @@ def test_doubts_marked_in_text_after_polish(polish_engine):
     update = eng.polish_result(session, result, session.polish)
     assert [d["in_text"] for d in update["doubts"]] == [True, False]
     assert "«пара кит», «лонч ди»" in backend.calls[-1][0]
+
+
+def test_codex_fallback_invocation(tmp_path):
+    """Без Claude Code пункт «Claude/Codex» идёт через `codex exec`: системный промпт — в начале stdin."""
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\n", encoding="utf-8")
+    codex.chmod(0o755)
+    backend = P.ClaudeCliBackend(executable=str(codex))
+    command, stdin = backend.invocation(str(codex), "SYSTEM", "текст")
+    assert command[:2] == [str(codex), "exec"] and command[-1] == "-"
+    assert "--sandbox" in command and "read-only" in command
+    assert stdin == "SYSTEM\n\nтекст"
+    assert backend.status()["model"] == "codex"
+    claude_cmd, claude_in = backend.invocation("/x/claude", "SYSTEM", "текст")
+    assert claude_cmd[:2] == ["/x/claude", "-p"] and claude_in == "текст"

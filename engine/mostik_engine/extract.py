@@ -32,6 +32,10 @@ _ACRONYM = re.compile(r"^[A-ZА-ЯЁ]{2,6}$")
 _HAS_LETTER = re.compile(r"[A-Za-zА-Яа-яЁё]")
 _HAS_DIGIT = re.compile(r"\d")
 _LATIN = re.compile(r"[A-Za-z]")
+# Без кода (папки документов): `код в обратных кавычках` и имена файлов вроде app.js, main.py.
+_LOWER_CAMEL = re.compile(r"^[a-z]{2,}[A-Z][a-z]")
+_CODE_SPAN = re.compile(r"`[^`]*`")
+_FILE_NAME = re.compile(r"^[\w+-]+(?:\.[\w+-]+)*\.[A-Za-z][A-Za-z0-9]{0,5}$")
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 _CAMEL = re.compile(r"[a-zа-яё0-9][A-ZА-ЯЁ]|[A-ZА-ЯЁ]{2}[a-zа-яё]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
@@ -149,8 +153,21 @@ def _words(line: str) -> Iterable[tuple[str, bool, bool]]:
         sentence_start = ends
 
 
-def terms_from_document(text: str, *, markdown: bool = True, cyrillic: bool | None = None) -> Found:
-    """Документ (Markdown, текст, текст PDF) → найденные термины со строками."""
+def _without_code(line: str) -> str:
+    """Строка без кода: убраны `спаны` и куски, похожие на имя файла (app.js, main.py)."""
+    line = _CODE_SPAN.sub(" ", line)
+    return " ".join(chunk for chunk in line.split()
+                    if not (_LATIN.search(chunk) and _FILE_NAME.match(chunk.strip("()[]<>«»\"'.,;:!?"))))
+
+
+def terms_from_document(
+    text: str, *, markdown: bool = True, cyrillic: bool | None = None, code: bool = True
+) -> Found:
+    """Документ (Markdown, текст, текст PDF) → найденные термины со строками.
+
+    `code=False` — папки документов: блоки кода, `спаны`, имена файлов и идентификаторы
+    (snake_case, camelCase со строчной) не берутся. Из кода — только в режиме разработчика (`repo`).
+    """
     found: Found = {}
     if cyrillic is None:
         cyrillic = mostly_cyrillic(text)
@@ -160,8 +177,12 @@ def terms_from_document(text: str, *, markdown: bool = True, cyrillic: bool | No
         if markdown and stripped.startswith(("```", "~~~")):
             in_fence = not in_fence
             continue
+        if in_fence and not code:
+            continue
         heading = _HEADING.match(line) if markdown and not in_fence else None
         body = heading.group(1) if heading else line
+        if not code:
+            body = _without_code(body)
         weight = HEADING_WEIGHT if heading else 1
         previous: str | None = None
         for word, at_start, quoted in _words(body):
@@ -170,6 +191,8 @@ def terms_from_document(text: str, *, markdown: bool = True, cyrillic: bool | No
             if rejected(word) or (trigger and _CODENAME_TRIGGER.match(word)):
                 continue
             kind = shape_kind(word)
+            if kind == "identifier" and not code and ("_" in word.strip("_") or _LOWER_CAMEL.match(word)):
+                continue  # load_vad, insertText; ClickHouse, gRPC, iPhone, macOS — названия, остаются
             if trigger and (kind or _capitalized(word) or _LATIN.search(word) or quoted):
                 _add(found, word, "project", number, weight=CODENAME_WEIGHT)
                 continue
