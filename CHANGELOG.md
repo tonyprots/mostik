@@ -89,12 +89,12 @@ English: a private denylist check guards commits, history, CI and the built app;
 
 ### Прод-укрепление
 - Пути к движку и Python без привязки к машине разработчика: движок ищется внутри `.app`, затем по переменным окружения.
-- Автообновление на Sparkle 2 (лента — до решения о домене), скрипт выпуска с подписью и нотаризацией, `.dmg`.
+- Автообновление на Sparkle 2 с подписанной лентой на GitHub Pages; приложение подписано собственным сертификатом «Mostik Release», поэтому разрешения macOS переживают обновления. Установка одной командой с проверкой подписи, `.dmg`, запуск при входе в систему (по умолчанию включён).
 - Перезапуск упавшего движка, журналы в `~/Library/Logs/Mostik` с ротацией, локальные отчёты о сбое.
 - Интерфейс на русском и английском без пропусков, подписи VoiceOver, сочетания окна (⌘, ⌘1…⌘3, ⌘W), контраст палитры не ниже 4,5:1 в обеих темах; стражи локализации, доступности и контраста в тестах.
 - CI на GitHub Actions, лицензия MIT, `SECURITY.md`, `PRIVACY.md`.
 
 ### English summary
 
-First release. On-device dictation for macOS that pastes at the cursor and marks words it may have misheard so you can accept or dismiss them; personal and project glossaries that learn from your edits; optional text polishing (local MLX model or `claude -p` with consent), voice edit and voice intents; meeting recording with separate tracks, speakers, summaries, minutes, tasks and a meeting archive; CLI, MCP server and skill for Claude Code and Codex. Production hardening: no machine-specific paths, Sparkle updates, release script, crash-safe engine restarts, local logs, full Russian and English UI, VoiceOver labels, WCAG contrast, CI, MIT license.
+First release. On-device dictation for macOS that pastes at the cursor and marks words it may have misheard so you can accept or dismiss them; personal and project glossaries that learn from your edits; optional text polishing (local MLX model or `claude -p` with consent), voice edit and voice intents; meeting recording with separate tracks, speakers, summaries, minutes, tasks and a meeting archive; CLI, MCP server and skill for Claude Code and Codex. Production hardening: no machine-specific paths, Sparkle updates signed with the project's own certificate (permissions survive updates), one-command install with a signature check, launch at login, crash-safe engine restarts, local logs, full Russian and English UI, VoiceOver labels, WCAG contrast, CI, MIT license.
 
