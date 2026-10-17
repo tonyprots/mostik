@@ -130,7 +130,7 @@ private struct SourcesColumn: View {
                     ForEach(sources) { source in
                         row(source)
                     }
-                    if !sources.contains(where: { $0.kind == "repo" }) {
+                    if model.settings.codeTerms, !sources.contains(where: { $0.kind == "repo" }) {
                         noProjectHint
                     }
                     Button { model.onAddSource(nil) } label: {

@@ -19,7 +19,7 @@ enum Simulate {
         let paths = MostikPaths.standard
         let settings = MostikSettings.load(from: paths.settings)
         let language = value("--language") ?? settings.language
-        let project = value("--project") ?? settings.projectPath
+        let project = value("--project") ?? settings.codeProjectPath
 
         guard FileManager.default.fileExists(atPath: wav.path) else {
             FileHandle.standardError.write(Data("no such file: \(wav.path)\n".utf8))

@@ -283,7 +283,7 @@ public enum FrameStore {
 public enum HintSources {
     public static func roots(settings: MostikSettings) -> [String] {
         var roots = settings.extraSources
-        if let project = settings.projectPath, !project.isEmpty, !roots.contains(project) {
+        if let project = settings.codeProjectPath, !project.isEmpty, !roots.contains(project) {
             roots.append(project)
         }
         return roots

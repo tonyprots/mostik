@@ -49,6 +49,15 @@ public struct MostikSettings: Codable, Equatable, Sendable {
     /// Проект берётся из папки агента в активном окне (cwd процесса claude/codex → корень git).
     /// `projectPath` — ручная замена, когда автоопределение не сработало.
     public var autoProject: Bool = true
+    /// Термины из кода (режим разработчика): словарь из проекта — найденного по окну агента или
+    /// `projectPath`. По умолчанию выключено и у старых файлов настроек тоже: тысячи идентификаторов
+    /// из репозитория перетягивали русскую речь в короткие английские слова. Без него словарь —
+    /// только папки документов, календарь и личный словарь.
+    public var codeTerms: Bool = false
+    /// Запасная папка проекта, если термины из кода включены; иначе nil.
+    public var codeProjectPath: String? { codeTerms ? projectPath : nil }
+    /// Искать проект по окну агента — только при включённых терминах из кода.
+    public var codeAutoProject: Bool { codeTerms && autoProject }
     /// Дополнительные источники словаря: папки документов, Markdown, Obsidian (S2).
     public var extraSources: [String] = []
     /// Календарь через EventKit как источник терминов и имён (S1). Включает пользователь.
@@ -156,6 +165,7 @@ public struct MostikSettings: Codable, Equatable, Sendable {
         onboarded = try c.decodeIfPresent(Bool.self, forKey: .onboarded) ?? d.onboarded
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
         autoProject = try c.decodeIfPresent(Bool.self, forKey: .autoProject) ?? d.autoProject
+        codeTerms = try c.decodeIfPresent(Bool.self, forKey: .codeTerms) ?? d.codeTerms
         extraSources = try c.decodeIfPresent([String].self, forKey: .extraSources) ?? d.extraSources
         calendarEnabled = try c.decodeIfPresent(Bool.self, forKey: .calendarEnabled) ?? d.calendarEnabled
         calendarCommand = try c.decodeIfPresent(String.self, forKey: .calendarCommand) ?? d.calendarCommand

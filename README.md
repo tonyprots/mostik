@@ -34,7 +34,7 @@ Typing is slow, and voice is faster. But ordinary dictation trips on the words t
 name, a project, a term from your code. You end up fixing them by hand.
 
 Mostik is dictation for macOS built to get those words right. A second model checks the first one and marks the
-words they disagree on instead of guessing silently. A glossary learns your names, projects and terms, including the
+words they disagree on instead of guessing silently. A glossary learns your names, projects and terms, and, for developers, the
 identifiers of the repository you have open. The same app records your calls, with you and the other side on
 separate tracks, and gives you a transcript with speakers. Styles, translation and voice commands let you set it up
 your way. Recognition runs on the Mac: your audio never leaves it.
@@ -70,8 +70,9 @@ field. ⌃⌘Z undoes the last paste, ⌃⌘R swaps in the raw transcript. Nothi
 - **Personal glossary.** Each entry has two columns, "how it is spelled" and "how recognition hears it".
   Replacement works on whole words, and the longer rule wins.
 - **Names and projects** come from your calendar (meetings and attendees) and from folders of notes you add.
-- **Terms from your code.** Open a repository, and Mostik takes its identifiers, README headings and dependencies,
-  so `parakeet_tdt` comes out spelled as in the code.
+- **Terms from your code** (developer option, off by default). Turn on “Terms from code” in Settings, and Mostik
+  takes the open repository's identifiers, README headings and dependencies, so `parakeet_tdt` comes out spelled as
+  in the code.
 - **It learns from your edits.** For a minute after pasting, Mostik compares the field with what it typed (password
   fields are never read). Correct the same word twice in a week, and it offers to remember it. Only what you confirm
   goes into the glossary, and learning can be turned off.

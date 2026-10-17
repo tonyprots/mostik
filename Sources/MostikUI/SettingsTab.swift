@@ -610,6 +610,39 @@ struct SettingsTab: View {
                               "For a minute after inserting, Mostik compares the field with what it inserted. If you fix the same word twice in a week, it offers to remember the spelling. Only what you confirm goes into the glossary. Password fields are never read."),
                    isOn: bind(\.learnFromEdits))
         FormDivider()
+        FormToggle(title: L("Термины из кода", "Terms from code"),
+                   hint: L("Для разработчиков: словарь из репозитория, открытого в редакторе или терминале.",
+                           "For developers: glossary from the repository open in your editor or terminal."),
+                   details: L("Выключено — словарь берётся только из ваших папок с документами, календаря и личного словаря. В репозитории тысячи имён из кода, и с ними русская речь чаще превращается в короткие английские слова.",
+                              "When off, the glossary comes only from your document folders, calendar and personal glossary. A repository holds thousands of code names, and with them speech more often turns into short English words."),
+                   isOn: bind(\.codeTerms))
+        if model.settings.codeTerms {
+            FormDivider()
+            projectRows
+        }
+        FormDivider()
+        PolishExtrasSection(model: model, parts: [.advanced])
+        FormDivider()
+        FormRow(title: L("Движок распознавания", "Recognition engine"), hint: nil) {
+            HStack(spacing: 6) {
+                StatusDot(color: engine.color, size: 7)
+                Text(engine.text).font(TType.body).foregroundStyle(Palette.inkSecondary).lineLimit(1)
+            }
+        }
+        // П10 С3: свой Python — только в debug-сборке; в выпуске движок берёт встроенный.
+        if EnginePaths.honorsExplicitPython() {
+            FormDivider()
+            FormRow(title: L("Python движка", "Engine Python"),
+                    hint: model.settings.enginePython.isEmpty ? L("Встроенный. Свой нужен только разработчику.", "Built-in. A custom one is for developers only.")
+                                                             : NSString(string: model.settings.enginePython).abbreviatingWithTildeInPath) {
+                Button(L("Изменить…", "Change…")) { model.onChooseEnginePython() }
+                    .buttonStyle(.mostik(.secondary, compact: true))
+            }
+        }
+    }
+
+    /// Проект для терминов из кода: автопоиск и запасная папка. Видны, только когда термины из кода включены.
+    @ViewBuilder private var projectRows: some View {
         FormToggle(title: L("Определять проект сам", "Detect the project"),
                    hint: L("Берёт термины из проекта, открытого в редакторе или терминале.", "Takes terms from the project open in your editor or terminal."),
                    isOn: bind(\.autoProject))
@@ -631,25 +664,6 @@ struct SettingsTab: View {
                     model.onChooseProject(nil)
                 }
                 .buttonStyle(.mostik(.secondary, compact: true))
-            }
-        }
-        FormDivider()
-        PolishExtrasSection(model: model, parts: [.advanced])
-        FormDivider()
-        FormRow(title: L("Движок распознавания", "Recognition engine"), hint: nil) {
-            HStack(spacing: 6) {
-                StatusDot(color: engine.color, size: 7)
-                Text(engine.text).font(TType.body).foregroundStyle(Palette.inkSecondary).lineLimit(1)
-            }
-        }
-        // П10 С3: свой Python — только в debug-сборке; в выпуске движок берёт встроенный.
-        if EnginePaths.honorsExplicitPython() {
-            FormDivider()
-            FormRow(title: L("Python движка", "Engine Python"),
-                    hint: model.settings.enginePython.isEmpty ? L("Встроенный. Свой нужен только разработчику.", "Built-in. A custom one is for developers only.")
-                                                             : NSString(string: model.settings.enginePython).abbreviatingWithTildeInPath) {
-                Button(L("Изменить…", "Change…")) { model.onChooseEnginePython() }
-                    .buttonStyle(.mostik(.secondary, compact: true))
             }
         }
     }

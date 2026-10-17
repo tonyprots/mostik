@@ -116,6 +116,7 @@ enum SettingsInventory {
         e("Перепроверка", "privacy", "\\.verify"),
         e("Микрофон наготове", "privacy", "\\.warmMicrophone"),
         e("Учиться на правках", "privacy", "\\.learnFromEdits"),
+        e("Термины из кода", "privacy", "\\.codeTerms"),
         e("Проект сам", "privacy", "\\.autoProject"),
         e("Папка проекта", "privacy", "onChooseProject"),
         e("Буфер обмена", "privacy", "\\.clipboard", "PolishExtrasSettings.swift", via: "PolishExtrasSection(model: model, parts: [.advanced])"),

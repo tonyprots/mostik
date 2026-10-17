@@ -84,6 +84,7 @@ struct SettingsIndex {
             Item(id: "verify", pane: .privacy, title: L("Второе распознавание терминов", "Second pass for terms"), keywords: "verify double-check перепроверка проверка второй движок", reveal: adv),
             Item(id: "warmMicrophone", pane: .privacy, title: L("Держать микрофон наготове", "Keep the microphone ready"), keywords: "microphone микрофон тёплый", reveal: adv),
             Item(id: "learnFromEdits", pane: .privacy, title: L("Учиться на правках", "Learn from edits"), keywords: "learn правки словарь", reveal: adv),
+            Item(id: "codeTerms", pane: .privacy, title: L("Термины из кода", "Terms from code"), keywords: "code developer разработчик код репозиторий repository проект project", reveal: adv),
             Item(id: "autoProject", pane: .privacy, title: L("Определять проект сам", "Detect the project"), keywords: "project git проект", reveal: adv),
             Item(id: "projectPath", pane: .privacy, title: L("Папка проекта", "Project folder"), keywords: "folder папка словарь glossary", reveal: adv),
             Item(id: "contextClipboard", pane: .privacy, title: L("Буфер обмена как подсказка модели", "Clipboard as a hint for the model"), keywords: "clipboard буфер", reveal: adv),
