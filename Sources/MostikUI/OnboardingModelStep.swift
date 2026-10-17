@@ -22,11 +22,11 @@ struct OnboardingModelStep: View {
     var body: some View {
         VStack(spacing: split ? DS.Space.s : DS.Space.m) {
             VStack(spacing: DS.Space.xs) {
-                Text(L("Модель — по желанию", "A model — optional"))
+                Text(L("Сводки и чистый текст", "Summaries and clean text"))
                     .font(.system(size: 28, weight: .bold))
                     .accessibilityAddTraits(.isHeader)
-                Text(L("Делает сводки и названия встреч и причёсывает диктовку. Без неё текст вставляется как сказано.",
-                       "Writes meeting summaries and titles and polishes dictation. Without one, text goes in as spoken."))
+                Text(L("Языковая модель пишет сводку и название встречи, а из диктовки убирает оговорки и слова-паразиты. Выберите, где ей работать.",
+                       "A language model writes meeting summaries and titles and cleans slips and filler words out of dictation. Choose where it runs."))
                     .font(TType.body)
                     .foregroundStyle(Palette.inkSecondary)
                     .multilineTextAlignment(.center)
@@ -34,18 +34,19 @@ struct OnboardingModelStep: View {
             }
             VStack(spacing: 0) {
                 option(.local, title: L("На этом Mac", "On this Mac") + (llm.map { " · " + ModelCatalog.size($0.size, russian: L10n.isRussian) } ?? ""),
-                       hint: L("Ничего не уходит в сеть. Скачается, пока вы пробуете диктовку.",
-                               "Nothing leaves this Mac. Downloads while you try a dictation."))
+                       hint: L("Ничего не уходит в сеть. Модель скачается, пока вы пробуете диктовку.",
+                               "Nothing leaves this Mac. The model downloads while you try a dictation."))
                 Hairline()
-                option(.claude, title: L("Claude по подписке", "Claude on your subscription"),
-                       hint: L("Текст диктовок и расшифровки встреч с чужими словами уходят в Anthropic. Звук — никогда.",
-                               "Dictated text and meeting transcripts, with other people’s words, go to Anthropic. Never audio.")
+                option(.claude, title: L("Claude/Codex по подписке", "Claude/Codex on your subscription"),
+                       hint: L("Нужен Claude Code или Codex на этом Mac. Тексты диктовок и расшифровки встреч уходят в Anthropic или OpenAI, звук — никогда.",
+                               "Needs Claude Code or Codex on this Mac. Dictated text and meeting transcripts go to Anthropic or OpenAI, never audio.")
                            + (model.polishAvailable["claude"] == false
-                              ? L(" Claude Code на этом Mac не найден: установите его (claude.ai/install.sh), войдите и перезапустите Mostik.",
-                                  " Claude Code isn’t on this Mac: install it (claude.ai/install.sh), sign in and relaunch Mostik.") : ""))
+                              ? L(" Сейчас ни того, ни другого нет: установите один, войдите и перезапустите Mostik.",
+                                  " Neither is installed now: install one, sign in and relaunch Mostik.") : ""))
                 Hairline()
                 option(.none, title: L("Пока без модели", "No model for now"),
-                       hint: L("Выбрать можно позже в Настройках.", "You can pick one later in Settings."))
+                       hint: L("Текст вставляется как сказано. Модель можно выбрать позже в Настройках.",
+                               "Text goes in as spoken. You can pick a model later in Settings."))
             }
             .padding(.horizontal, DS.Space.m)
             .background(Palette.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
@@ -61,7 +62,7 @@ struct OnboardingModelStep: View {
                 }
                 .buttonStyle(.plain)
                 if split { separate }
-                Label(L("Встречи «Только на этом Mac» обрабатывает только модель на этом Mac.",
+                Label(L("Встречи с пометкой «Только на этом Mac» обрабатывает только локальная модель.",
                         "“This Mac only” meetings are processed only by the on-device model."),
                       systemImage: "lock")
                     .font(TType.caption)
@@ -120,11 +121,11 @@ struct OnboardingModelStep: View {
     private var separate: some View {
         VStack(alignment: .leading, spacing: DS.Space.xs) {
             row(L("Диктовка", "Dictation")) {
-                Segmented(options: [(PolishBackend.off, L("Выкл", "Off")), (.mlx, L("На этом Mac", "On this Mac")), (.claude, "Claude")],
+                Segmented(options: [(PolishBackend.off, L("Выкл", "Off")), (.mlx, L("На этом Mac", "On this Mac")), (.claude, "Claude/Codex")],
                           selection: Binding(get: { model.settings.polish.effectiveBackend }, set: { setDictation($0) }))
             }
             row(L("Встречи", "Meetings")) {
-                Segmented(options: [(PolishBackend.off, L("Выкл", "Off")), (.mlx, L("На этом Mac", "On this Mac")), (.claude, "Claude")],
+                Segmented(options: [(PolishBackend.off, L("Выкл", "Off")), (.mlx, L("На этом Mac", "On this Mac")), (.claude, "Claude/Codex")],
                           selection: Binding(get: { model.settings.meetingEffectiveBackend }, set: { setMeetings($0) }))
             }
         }
@@ -150,7 +151,7 @@ struct OnboardingModelStep: View {
         case .claude:
             s.polish.backend = .claude
             s.polish.cloudConsent = true
-            s.grantMeetingAI()  // под выбором сказано: текст и расшифровки уходят в Anthropic
+            s.grantMeetingAI()  // под выбором сказано: текст и расшифровки уходят в Anthropic или OpenAI
         case .none, .custom:
             s.polish.backend = .off
         }

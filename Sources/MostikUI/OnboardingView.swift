@@ -197,15 +197,15 @@ public struct OnboardingView: View {
                                     .font(.system(size: 46, weight: .regular))
                                     .foregroundStyle(Palette.accent)
                                     .accessibilityHidden(true)),
-                   title: L("Встречи — по желанию", "Meetings — optional"),
-                   text: L("Нужно, только чтобы записывать встречи со звуком собеседников. Для диктовки шаг можно пропустить.",
-                           "Only needed to record meetings with the other side’s audio. Dictation doesn’t need it — feel free to skip."))
+                   title: L("Запись встреч", "Meeting recording"),
+                   text: L("Mostik запишет звонок в любом приложении: ваш голос и голоса собеседников. Потом — расшифровка с именами и сводка. Диктовке эти разрешения не нужны.",
+                           "Mostik records a call in any app: your voice and the other side’s. Then a transcript with names and a summary. Dictation doesn’t need these permissions."))
             VStack(spacing: 0) {
                 actionRow(PermissionRow(title: L("Звук собеседников", "Other side’s audio"),
                                         state: p.screenRecording ? .granted : .later,
                                         hint: p.screenRecording
                                           ? L("Встреча уже записывалась со звуком собеседников.", "A meeting was recorded with the other side’s audio.")
-                                          : L("В macOS это «Запись экрана и звука». macOS спросит при первой записи встречи.",
+                                          : L("В macOS это «Запись экрана и звука». Система спросит при первой записи встречи.",
                                               "In macOS this is Screen & System Audio Recording. macOS asks on the first meeting recording."),
                                         button: p.screenRecording ? nil : (L("Открыть", "Open"), { request(.screenRecording) })))
                 Hairline()
@@ -224,14 +224,20 @@ public struct OnboardingView: View {
     /// Последний шаг: попробовать продиктовать в поле прямо здесь; ниже — «Проверка» (R7) коротко.
     private var checkup: some View {
         VStack(spacing: DS.Space.m) {
-            header(art: AnyView(KeyCap(symbol: HUDHint.keySymbol(model.settings.holdKey), caption: HoldKeyCap.caption(model.settings.holdKey), size: 52, pressed: true)
-                                    .accessibilityHidden(true)),
+            header(art: nil,
                    title: L("Попробуйте продиктовать", "Try a dictation"),
                    text: models.needed
                      ? L("Сначала модели распознавания — без них фраза не превратится в текст.",
                          "Speech models first — without them nothing turns into text.")
                      : L("Нажмите на поле, зажмите \(HoldKeys.name(model.settings.holdKey)), скажите фразу и отпустите.",
                          "Click the field, hold \(HoldKeys.name(model.settings.holdKey)), say a sentence and let go."))
+            // Клавиша диктовки — здесь, а не только в Настройках: ею сейчас и пробуют.
+            HStack(spacing: DS.Space.s) {
+                Text(L("Клавиша диктовки", "Dictation key")).font(TType.body).foregroundStyle(Palette.ink)
+                Spacer(minLength: DS.Space.s)
+                KeyPicker(selection: Binding(get: { model.settings.holdKey },
+                                             set: { key in var s = model.settings; s.holdKey = key; model.onUpdateSettings(s) }))
+            }
             if models.needed {
                 // Без моделей пробная диктовка упадёт в «модели не скачаны» — сначала они.
                 VStack(spacing: 0) { actionRow(speechModelsRow) }
@@ -304,7 +310,7 @@ public struct OnboardingView: View {
             line([.accessibility], L("Клавиша работает везде", "Record key in any app")),
             line([.postEvents], L("Вставка текста", "Pasting text")),
             line([.engine, .models], L("Распознавание готово", "Speech recognition ready")),
-            line([.systemAudio], L("Звук собеседников для встреч", "Other side’s audio for meetings")),
+            line([.systemAudio], L("Звук собеседников", "Other side’s audio")),
         ].compactMap { $0 }
     }
 
@@ -448,7 +454,7 @@ public struct OnboardingView: View {
         case .denied: L("Не разрешено", "Not allowed")
         case .relaunch: L("После перезапуска", "After relaunch")
         case .later: L("Спросят позже", "Asked later")
-        case .optional: L("По желанию", "Optional")
+        case .optional: L("Можно позже", "Can wait")
         case .downloading: L("Скачивается", "Downloading")
         case .checking: ""
         }
@@ -456,63 +462,27 @@ public struct OnboardingView: View {
 
     // MARK: Низ
 
-    /// Низ по HIG: «Назад» у левого края, главная кнопка — справа внизу, «Позже» — слева от неё.
-    /// Пока разрешение шага не выдано, «Продолжить» неактивна: главное действие — «Разрешить» в строке.
-    /// Пояснение, что будет без разрешения, — под кнопками, по правому краю.
+    /// Низ: «Назад» слева, одна кнопка справа. Без «Позже» и неактивной «Продолжить» (Антон: две кнопки
+    /// и сноска ломали вёрстку): что будет без разрешения, говорит сама строка разрешения.
     private var footer: some View {
-        VStack(alignment: .trailing, spacing: DS.Space.xs) {
-            HStack(spacing: DS.Space.s) {
-                if step > 0 {
-                    Button(L("Назад", "Back")) { step -= 1 }.buttonStyle(.mostikQuiet)
-                }
-                Spacer(minLength: DS.Space.s)
-                if step < count - 1 {
-                    if !stepDone {
-                        Button(L("Позже", "Later")) { step += 1 }
-                            .buttonStyle(.mostik(.secondary, large: true))
-                    }
-                    // Неактивная — вторичной: две залитые кнопки на экране спорили бы с «Разрешить».
-                    Button(L("Продолжить", "Continue")) { step += 1 }
-                        .buttonStyle(.mostik(stepDone ? .primary : .secondary, large: true))
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!stepDone)
-                } else {
-                    Button(L("Проверить всё подробно (30 с)", "Check everything in detail (30 s)")) {
-                        finish()
-                        model.openSettings(.fullCheckup)
-                    }
-                    .buttonStyle(.mostikQuiet)
-                    // «Готово» выделяется, только когда пробная диктовка удалась.
-                    Button(L("Готово", "Done")) { finish() }
-                        .buttonStyle(.mostik(practiced ? .primary : .secondary, large: true))
-                        .keyboardShortcut(.defaultAction)
-                }
+        HStack(spacing: DS.Space.s) {
+            if step > 0 {
+                Button(L("Назад", "Back")) { step -= 1 }.buttonStyle(.mostikQuiet)
             }
-            if step < count - 1, !stepDone, let consequence {
-                Text(consequence)
-                    .font(TType.caption)
-                    .foregroundStyle(Palette.inkSecondary)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: 340, alignment: .trailing)
-                    .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: DS.Space.s)
+            if step < count - 1 {
+                // Залитая — когда шаг сделан; до того главное действие — «Разрешить» в строке.
+                Button(L("Дальше", "Next")) { step += 1 }
+                    .buttonStyle(.mostik(stepDone ? .primary : .secondary, large: true))
+                    .keyboardShortcut(.defaultAction)
+            } else {
+                // «Готово» выделяется, только когда пробная диктовка удалась.
+                Button(L("Готово", "Done")) { finish() }
+                    .buttonStyle(.mostik(practiced ? .primary : .secondary, large: true))
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    /// Что будет, если идти дальше без разрешения этого шага.
-    private var consequence: String? {
-        let p = model.permissions
-        switch step {
-        case 0 where !p.microphone:
-            return L("Без микрофона диктовка не заработает. Разрешить можно позже: Настройки → Приватность и данные → Доступ.",
-                     "Dictation won’t work without the mic. You can allow it later: Settings → Privacy & Data → Access.")
-        case 1 where !p.accessibility:
-            return L("Без доступа \(HoldKeys.name(model.settings.holdKey)) не сработает в других приложениях. Включить можно позже: Настройки → Приватность и данные → Доступ.",
-                     "Without access, \(HoldKeys.name(model.settings.holdKey)) won’t work in other apps. You can turn it on later: Settings → Privacy & Data → Access.")
-        default:
-            return nil
-        }
+        .frame(maxWidth: .infinity)
     }
 
     private func finish() {

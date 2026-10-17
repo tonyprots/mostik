@@ -159,6 +159,10 @@ public final class Paster {
     @discardableResult
     public func undo() -> Bool { postCommand(key: CGKeyCode(kVK_ANSI_Z)) }
 
+    /// ⇧⌘Z приложения: вернуть отменённое, если исправление в тексте не удалось довести (`TextFixPlanner`).
+    @discardableResult
+    public func redo() -> Bool { postCommand(key: CGKeyCode(kVK_ANSI_Z), shift: true) }
+
     /// Временная запись для ⌘V: nspasteboard.org Transient + Concealed — Maccy, Paste, Raycast
     /// и прочие менеджеры буфера её не сохраняют.
     @discardableResult
@@ -203,16 +207,17 @@ public final class Paster {
     /// не превратил вставку в ⌥⌘V; свой источник состояния не тянет чужие модификаторы.
     private func postCommandV() -> Bool { postCommand(key: CGKeyCode(kVK_ANSI_V)) }
 
-    private func postCommand(key: CGKeyCode) -> Bool {
+    private func postCommand(key: CGKeyCode, shift: Bool = false) -> Bool {
         let source = CGEventSource(stateID: .privateState)
         let command = CGKeyCode(kVK_Command)
         guard let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: command, keyDown: true),
               let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false),
               let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: command, keyDown: false) else { return false }
+        let flags: CGEventFlags = shift ? [.maskCommand, .maskShift] : .maskCommand
         cmdDown.flags = .maskCommand
-        down.flags = .maskCommand
-        up.flags = .maskCommand
+        down.flags = flags
+        up.flags = flags
         cmdUp.flags = []
         for event in [cmdDown, down, up, cmdUp] {
             event.post(tap: .cghidEventTap)

@@ -43,7 +43,7 @@ from . import paths
 from .extract import KINDS, rejected, shape_kind, terms_from_document
 from .wordlists import CODE_COMMON
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # 3: папки документов без кода
 LIMIT = 2000
 MIN_LENGTH = 3
 RESCAN_AFTER_S = 600.0
@@ -57,6 +57,9 @@ DOC_EXTENSIONS = frozenset({".md", ".markdown", ".txt", ".pdf"})
 MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown"})
 HEADING_FILES = ("AGENTS.md", "CLAUDE.md")
 MANIFESTS = frozenset({"package.json", "pyproject.toml", "Cargo.toml", "go.mod"})
+# Признаки проекта с кодом, которые не разбираются как манифест.
+CODE_MARKERS = frozenset({"Package.swift", "Gemfile", "pom.xml", "build.gradle", "setup.py", "Makefile", "CMakeLists.txt"})
+CODE_DIR_MIN_FILES = 4
 EXCLUDED_DIRS = frozenset(
     {".git", "node_modules", ".venv", "build", "dist", ".build", "__pycache__", ".worktrees",
      "venv", ".mypy_cache", ".pytest_cache", ".tox", "target", "Pods", "DerivedData", ".obsidian",
@@ -244,7 +247,7 @@ def _pdf_text(path: Path) -> str:
     return result.stdout.decode("utf-8", "replace") if result.returncode == 0 else ""
 
 
-def _scan_file(path: Path, kind: str) -> tuple[Found, int]:
+def _scan_file(path: Path, kind: str, source: str = "repo") -> tuple[Found, int]:
     """Термины файла и сколько байт текста прочитано."""
     if kind == "pdf":
         text = _pdf_text(path)
@@ -258,7 +261,7 @@ def _scan_file(path: Path, kind: str) -> tuple[Found, int]:
         return _names_from_source(text, path.stem), size
     if kind == "manifest":
         return _names_from_manifest(path.name, text), size
-    return terms_from_document(text, markdown=kind == "markdown"), size
+    return terms_from_document(text, markdown=kind == "markdown", code=source == "repo"), size
 
 
 # П10: репозиторий может быть чужим. Его `.git/config` не должен ничего запускать: `core.fsmonitor`
@@ -405,6 +408,14 @@ def looks_like_data(files: list[str]) -> bool:
     return data / len(files) >= DATA_DIR_SHARE
 
 
+def looks_like_code(folder: Path, files: list[str]) -> bool:
+    """Папка с кодом внутри папки документов: репозиторий, манифест или больше половины — исходники."""
+    if any(name in MANIFESTS or name in CODE_MARKERS for name in files) or (folder / ".git").exists():
+        return True
+    source = sum(1 for name in files if os.path.splitext(name)[1].lower() in SOURCE_EXTENSIONS)
+    return len(files) >= CODE_DIR_MIN_FILES and source * 2 > len(files)
+
+
 def _fs_lister(root: Path):
     def list_dir(relative: str) -> tuple[list[str], list[str]]:
         subdirs: list[str] = []
@@ -452,6 +463,8 @@ def _walk(root: Path, source: str = "repo"):
         visited += 1
         subdirs, files = list_dir(relative)
         if relative and looks_like_data(files):
+            continue
+        if source != "repo" and relative and looks_like_code(root / relative, files):
             continue
         for name in sorted(files):
             if name.startswith("."):
@@ -633,7 +646,7 @@ def build(
             text_bytes += int(previous.get("text_bytes", previous["size"]))
             reused += 1
             continue
-        names, size = _scan_file(path, file_kind)
+        names, size = _scan_file(path, file_kind, kind)
         text_bytes += size
         files[relative] = {"mtime": stat.st_mtime, "size": stat.st_size, "text_bytes": size, "names": names}
     now = time.time()

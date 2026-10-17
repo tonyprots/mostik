@@ -92,3 +92,28 @@ def test_project_glossaries_memory(tmp_path):
     terms = memory.terms(str(tmp_path))
     assert "EngineClient" in terms
     assert memory.terms(str(tmp_path / "missing")) == []
+
+
+def test_docs_folder_skips_code(tmp_path):
+    """Папка документов: ни кода, ни репозиториев внутри, ни `спанов`, ни имён файлов."""
+    (tmp_path / "Заметки.md").write_text(
+        "# Встреча с Борисом про Альфу\n\n"
+        "Обсудили релиз Телемоста, правим `load_vad` в app.js и main.py.\n"
+        "Переименовать insertText и reconcile_windows, ClickHouse оставить.\n\n"
+        "```python\nclass HiddenFence:\n    pass\n```\n",
+        encoding="utf-8",
+    )
+    make_repo(tmp_path / "code" / "mostik")
+    (tmp_path / "code" / "mostik" / "README.md").write_text("# RepoOnlyTitle\n", encoding="utf-8")
+    terms = set(pg.build(tmp_path, kind="docs")["terms"])
+    assert {"Борисом", "Альфу", "Телемоста"} & terms
+    assert "ClickHouse" in terms
+    assert not terms & {"load_vad", "app", "js", "main", "py", "insertText", "reconcile_windows",
+                        "HiddenFence", "RepoOnlyTitle"}
+
+
+def test_repo_markdown_keeps_code(tmp_path):
+    """Режим разработчика: в Markdown репозитория код остаётся термином."""
+    make_repo(tmp_path)
+    (tmp_path / "docs.md").write_text("# Заметки\n\nПравим `load_vad` и EngineClient.\n", encoding="utf-8")
+    assert "load_vad" in set(pg.build(tmp_path)["terms"])

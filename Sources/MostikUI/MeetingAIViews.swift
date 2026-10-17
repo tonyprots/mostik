@@ -183,8 +183,8 @@ struct MeetingAISection: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
             if case .noBackend = gate {
-                Text(L("Нужна модель: выберите Claude или модель на этом Mac в Настройках → Текст.",
-                       "A model is needed: choose Claude or an on-device model in Settings → Text."))
+                Text(L("Нужна модель: выберите Claude/Codex или модель на этом Mac в Настройках → Текст.",
+                       "A model is needed: choose Claude/Codex or an on-device model in Settings → Text."))
                     .font(TType.callout)
                     .foregroundStyle(Palette.doubt)
                     .fixedSize(horizontal: false, vertical: true)
@@ -560,7 +560,7 @@ struct MeetingAISection: View {
     }
 
     private func footer(_ result: MeetingAIResult) -> some View {
-        var parts = [result.backend == "mlx" ? L("Локальная модель", "Local model") : "Claude"]
+        var parts = [result.backend == "mlx" ? L("Локальная модель", "Local model") : "Claude/Codex"]
         if let model = result.model { parts[0] += " " + model }
         if result.seconds > 0 { parts.append(String(format: L("%.0f с", "%.0f s"), result.seconds)) }
         if result.chunks > 1 { parts.append(MeetingAICopy.parts(result.chunks)) }
@@ -772,18 +772,18 @@ enum MeetingAICopy {
         case .needsConsent(.mlx):
             return L("Сама не запустилась: нужно разрешение. Модель на этом Mac", "Didn’t start on its own: needs your OK. On-device model")
         case .needsConsent:
-            return L("Сама не запустилась: нужно разрешение. Расшифровка уйдёт в Claude", "Didn’t start on its own: needs your OK. The transcript goes to Claude")
+            return L("Сама не запустилась: нужно разрешение. Расшифровка уйдёт в Claude/Codex", "Didn’t start on its own: needs your OK. The transcript goes to Claude/Codex")
         case .sensitiveCloud:
             return sensitiveCloud
         default:
-            return L("Расшифровка уйдёт в Claude", "The transcript goes to Claude")
+            return L("Расшифровка уйдёт в Claude/Codex", "The transcript goes to Claude/Codex")
         }
     }
 
     /// «Чувствительная» встреча и облачная модель: ничего не отправляем.
     static var sensitiveCloud: String {
-        L("Встреча помечена «Только на этом Mac»: в Claude она не уйдёт. Сводку и название сделает модель на этом Mac, когда она будет скачана.",
-          "This meeting is marked “This Mac only”: it won’t go to Claude. The on-device model writes its summary and title once it’s downloaded.")
+        L("Встреча помечена «Только на этом Mac»: в Claude/Codex она не уйдёт. Сводку и название сделает модель на этом Mac, когда она будет скачана.",
+          "This meeting is marked “This Mac only”: it won’t go to Claude/Codex. The on-device model writes its summary and title once it’s downloaded.")
     }
 
     static func tasks(_ n: Int) -> String { L10n.plural(n, ru: "задача", "задачи", "задач", en: "task", "tasks") }
@@ -807,13 +807,13 @@ struct MeetingAIConsentSheet: View {
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Palette.doubt)
                     .frame(width: 20, height: 20)
-                Text(cloud ? L("Расшифровка уйдёт в облако Anthropic", "The transcript goes to Anthropic’s cloud")
+                Text(cloud ? L("Расшифровка уйдёт в облако Anthropic или OpenAI", "The transcript goes to Anthropic or OpenAI cloud")
                            : L("Расшифровку обработает локальная модель", "A local model will process the transcript"))
                     .font(TType.headline).foregroundStyle(Palette.ink)
             }
             Text(cloud
-                 ? L("Заметки, сводку, задачи и рецепты сделает Claude Code по вашей подписке. Расшифровка уйдёт в Anthropic: текст и пометки, но не звук. В расшифровке слова других участников, поэтому это отдельное согласие, а не то, что дано для причёсывания диктовки. Оно действует, пока выбран Claude: при смене модели Mostik спросит снова. Встречи с пометкой «Только на этом Mac» не уходят никогда.",
-                     "Claude Code will write the notes, summary, tasks and recipes under your subscription. The transcript goes to Anthropic: text and marks, never audio. It holds other people’s words, so this is a separate consent from the one for polishing dictation. It lasts while Claude is selected: change the model and Mostik asks again. Meetings marked “This Mac only” are never sent.")
+                 ? L("Заметки, сводку, задачи и рецепты сделает Claude Code по вашей подписке. Расшифровка уйдёт в Anthropic или OpenAI: текст и пометки, но не звук. В расшифровке слова других участников, поэтому это отдельное согласие, а не то, что дано для причёсывания диктовки. Оно действует, пока выбран Claude: при смене модели Mostik спросит снова. Встречи с пометкой «Только на этом Mac» не уходят никогда.",
+                     "Claude Code will write the notes, summary, tasks and recipes under your subscription. The transcript goes to Anthropic or OpenAI: text and marks, never audio. It holds other people’s words, so this is a separate consent from the one for polishing dictation. It lasts while Claude is selected: change the model and Mostik asks again. Meetings marked “This Mac only” are never sent.")
                  : L("Заметки, сводку и задачи сделает модель на этом Mac. Расшифровка никуда не уходит.",
                      "A model on this Mac writes the notes, summary and tasks. The transcript stays here."))
                 .font(TType.body)

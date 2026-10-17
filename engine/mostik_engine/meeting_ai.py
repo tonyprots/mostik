@@ -606,11 +606,11 @@ def complete(backend: Any, system: str, user: str, timeout: float) -> str:
     if isinstance(backend, polish_mod.ClaudeCliBackend):
         path = backend.path()
         if path is None:
-            raise polish_mod.PolishUnavailable("claude не найден в PATH и ~/.local/bin")
-        command = backend.command(path, system)
+            raise polish_mod.PolishUnavailable(polish_mod.CLAUDE_MISSING)
+        command, stdin = backend.invocation(path, system, user)
         if shutil.which("nice"):
             command = ["nice", "-n", str(NICE)] + command
-        return polish_mod.run_isolated(command, user, timeout, env=backend.environment())
+        return polish_mod.run_isolated(command, stdin, timeout, env=backend.environment())
     return backend.complete(system, user, timeout)
 
 

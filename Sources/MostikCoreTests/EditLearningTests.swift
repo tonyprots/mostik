@@ -3,6 +3,11 @@ import MostikCore
 
 /// Обучение на правках (L1): где в поле вставка и во что её превратили; язык диктовки (L5).
 func runEditLearningTests() {
+    // Одна всплывашка: с сомнениями ведёт плашка, карточка «Слово распознано не так?» молчит.
+    check(!LearnPromptPolicy.showsSpellingChip(doubts: 2, corrections: 1), "сомнения — только плашка")
+    check(!LearnPromptPolicy.showsSpellingChip(doubts: 0, corrections: 0), "нечего запоминать")
+    check(LearnPromptPolicy.showsSpellingChip(doubts: 0, corrections: 1), "правки словаря без сомнений — карточка")
+
     // MARK: L1 — поиск вставки
     do {
         let value = "Привет. спроси клод про тесты. Пока"

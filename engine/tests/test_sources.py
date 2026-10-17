@@ -44,11 +44,11 @@ def test_docs_folder_terms_kinds_and_origins(tmp_path):
     make_docs(docs)
     result = pg.build(docs, kind="docs")
     terms = set(result["terms"])
-    assert {"Vega", "Альфа", "ClickHouse", "Злата", "TODO_LIST", "SDK", "S3"} <= terms
+    assert {"Vega", "Альфа", "ClickHouse", "Злата", "SDK", "S3"} <= terms
+    assert "TODO_LIST" not in terms  # идентификатор из кода — только в режиме разработчика
     assert entry(result, "Альфа")["kind"] == "project"
     assert entry(result, "Злата")["kind"] == "person"
     assert entry(result, "SDK")["kind"] == "acronym"
-    assert entry(result, "TODO_LIST")["kind"] == "identifier"
     assert entry(result, "ClickHouse")["origins"] == ["notes/meeting.md:3"]
     assert entry(result, "S3")["origins"] == ["plan.txt:1"]
     # Скрытое, .obsidian, картинки, версии и хэши — мимо; имя без повтора — мимо.

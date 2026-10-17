@@ -197,3 +197,12 @@ public struct GlossaryImportPreview: Equatable, Sendable {
                   added: Int(payload["added"]?.doubleValue ?? 0), path: path, text: text)
     }
 }
+
+/// Одна всплывашка после вставки, а не две.
+public enum LearnPromptPolicy {
+    /// «Слово распознано не так?» над плашкой — только когда плашка сама не ведёт к словам:
+    /// при сомнениях в ней уже «N слов под вопросом ›».
+    public static func showsSpellingChip(doubts: Int, corrections: Int) -> Bool {
+        doubts == 0 && corrections > 0
+    }
+}

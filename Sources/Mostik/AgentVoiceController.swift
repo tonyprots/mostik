@@ -73,7 +73,7 @@ final class AgentVoiceController {
     /// Запись началась: голос замолкает, индекс файлов проекта греется.
     func recordingBegan(project: String?) {
         announcer.stop()
-        if model.settings.agentVoice.fileMentions, let project { _ = files.index(root: project) }
+        if model.settings.agentVoice.fileMentions, model.settings.codeTerms, let project { _ = files.index(root: project) }
     }
 
     func refresh() {
@@ -128,7 +128,7 @@ final class AgentVoiceController {
             route.submit = send.submit
         }
 
-        if s.fileMentions {
+        if s.fileMentions, model.settings.codeTerms {  // читает файлы проекта — только в режиме разработчика
             let supported = route.pane.map { FileMentionApps.cliAgents.contains($0.agent) }
                 ?? FileMentionApps.supports(front, policy: policy)
             if supported, let root = route.pane?.project ?? project,

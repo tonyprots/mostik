@@ -384,7 +384,7 @@ struct ScenarioEditor: View {
                                                         selection: $scenario.language))
             optionRow(L("Причёсывание", "Polish"),
                       Segmented(options: [(nil, L("как везде", "default")), (PolishBackend.off, L("как сказано", "as spoken")),
-                                          (.mlx, L("локально", "local")), (.claude, "Claude")] as [(PolishBackend?, String)],
+                                          (.mlx, L("локально", "local")), (.claude, "Claude/Codex")] as [(PolishBackend?, String)],
                                 selection: $scenario.backend))
             optionRow(L("Стиль", "Style"),
                       Segmented(options: [(nil, L("как везде", "default")), (PolishStyle.plain, L("обычный", "plain")),

@@ -196,7 +196,7 @@ struct SettingsTab: View {
                     warning: polishUnavailable(shown)) {
                 Segmented(options: [(PolishBackend.off, L("Выкл", "Off")),
                                     (.mlx, L("На этом Mac", "On this Mac")),
-                                    (.claude, "Claude")],
+                                    (.claude, "Claude/Codex")],
                           selection: Binding(get: { pending ? .claude : backend }, set: { choosePolishBackend($0) }))
                     .accessibilityLabel(L("Чем причёсывать", "Polish with"))
             }
@@ -342,8 +342,8 @@ struct SettingsTab: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Palette.doubt)
                     .accessibilityHidden(true)
-                Text(L("Каждая диктовка, которую нужно причесать, уйдёт в облако Anthropic по вашей подписке Claude. Звук не отправляется, только текст. В окнах агентов не причёсываем.",
-                       "Every dictation to be polished goes to Anthropic’s cloud under your Claude subscription. Only text is sent, never audio. Agent windows are not polished."))
+                Text(L("Каждая диктовка, которую нужно причесать, уйдёт в облако Anthropic или OpenAI по вашей подписке Claude или Codex. Звук не отправляется, только текст. В окнах агентов не причёсываем.",
+                       "Every dictation to be polished goes to Anthropic or OpenAI cloud under your Claude/Codex subscription. Only text is sent, never audio. Agent windows are not polished."))
                     .font(TType.callout)
                     .foregroundStyle(Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -354,7 +354,7 @@ struct SettingsTab: View {
                 Button(L("Отмена", "Cancel")) { model.polishConsentPending = false }
                     .buttonStyle(.mostik(.quiet, compact: true))
                     .keyboardShortcut(.cancelAction)
-                Button(L("Включить Claude", "Turn on Claude")) {
+                Button(L("Включить Claude/Codex", "Turn on Claude/Codex")) {
                     var s = model.settings
                     s.polish.cloudConsent = true
                     s.polish.backend = .claude
@@ -374,7 +374,7 @@ struct SettingsTab: View {
 
     /// Строка «Текст диктовки» из сводки приватности — с той же точкой состояния, что в «Приватности и данных».
     private func ledgerPreview(now: Bool) -> some View {
-        LedgerLine(now: now, what: L("текст диктовки уходит в Anthropic", "dictated text goes to Anthropic"))
+        LedgerLine(now: now, what: L("текст диктовки уходит в Anthropic или OpenAI", "dictated text goes to Anthropic or OpenAI"))
     }
 
     private func polishUnavailable(_ backend: PolishBackend) -> Bool {
@@ -394,7 +394,7 @@ struct SettingsTab: View {
                 return L("Claude Code не найден на этом Mac — текст вставится как сказано. Установка в Терминале: curl -fsSL https://claude.ai/install.sh | bash, затем войти командой claude.",
                          "Claude Code isn’t on this Mac, so text goes in as spoken. Install in Terminal: curl -fsSL https://claude.ai/install.sh | bash, then sign in with claude.")
             }
-            return L("Через Claude по подписке. Текст появится через 2–3 с.", "Via Claude on your subscription. Text appears in 2–3 s.")
+            return L("Через Claude/Codex по подписке. Текст появится через 2–3 с.", "Via Claude/Codex on your subscription. Text appears in 2–3 s.")
         case .mlx:
             if model.polishAvailable["mlx"] == true {
                 return L("Модель на этом Mac: текст не уходит в сеть, около 2 с.", "On-device model: text stays local, about 2 s.")
@@ -414,8 +414,8 @@ struct SettingsTab: View {
                 return what + " " + L("Программа claude не найдена в PATH и ~/.local/bin, поэтому текст вставляется как сказано.",
                                       "The claude program wasn’t found in PATH or ~/.local/bin, so text goes in as spoken.")
             }
-            return what + " " + L("Работает через claude -p, модель haiku: 2–3 с после того, как отпустите клавишу. Если Claude не ответит за 30 с, вставится текст как сказано.",
-                                  "Runs via claude -p with haiku: 2–3 s after you release the key. If Claude doesn’t reply within 30 s, the text goes in as spoken.")
+            return what + " " + L("Работает через claude -p (модель haiku), а без Claude Code — через codex exec: 2–5 с после того, как отпустите клавишу. Если ответа нет за 30 с, вставится текст как сказано.",
+                                  "Runs via claude -p (haiku), or codex exec without Claude Code: 2–5 s after you release the key. If there’s no reply within 30 s, the text goes in as spoken.")
         case .mlx:
             let size = localModelRow.map { ModelCatalog.size($0.size, russian: L10n.isRussian) } ?? L("около 3,6 ГБ", "about 3.6 GB")
             if model.polishAvailable["mlx"] == true {
@@ -475,11 +475,11 @@ struct SettingsTab: View {
         FormGroup(title: L("Заметки и сводка", "Notes and summary")) {
             FormRow(title: L("Модель для встреч", "Model for meetings"),
                     hint: MeetingModelChoice.hint(model.settings, localInstalled: model.localLLMInstalled),
-                    details: L("Сводки и названия встреч. «Как у диктовки» — та же модель, что в разделе «Текст». Встречи «Только на этом Mac» обрабатывает только модель на этом Mac: если для встреч выбран Claude, они уходят на неё.",
-                               "Summaries and meeting titles. “Same as dictation” uses the model from Text. “This Mac only” meetings are processed only by the on-device model: when Claude is chosen for meetings, they go to it instead.")) {
+                    details: L("Сводки и названия встреч. «Как у диктовки» — та же модель, что в разделе «Текст». Встречи «Только на этом Mac» обрабатывает только модель на этом Mac: если для встреч выбран Claude/Codex, они уходят на неё.",
+                               "Summaries and meeting titles. “Same as dictation” uses the model from Text. “This Mac only” meetings are processed only by the on-device model: when Claude/Codex is chosen for meetings, they go to it instead.")) {
                 Segmented(options: [(MeetingModelChoice.same, L("Как у диктовки", "Same as dictation")),
                                     (.mlx, L("На этом Mac", "On this Mac")),
-                                    (.claude, "Claude"),
+                                    (.claude, "Claude/Codex"),
                                     (.off, L("Выкл", "Off"))],
                           selection: Binding(get: { MeetingModelChoice(model.settings.meetingBackend) },
                                              set: { choice in
@@ -805,19 +805,19 @@ struct PrivacyLedger: View {
                   footer: L("Звук диктовок и встреч не отправляется никуда. Встречи с пометкой «Только на этом Mac» не уходят никогда.",
                             "Dictation and meeting audio is never sent anywhere. Meetings marked “This Mac only” never leave it.")) {
             line(L("Текст диктовки", "Dictated text"),
-                 cloud ? L("Уходит в Anthropic: причёсывает Claude.", "Goes to Anthropic: Claude polishes it.")
+                 cloud ? L("Уходит в Anthropic или OpenAI: причёсывает Claude/Codex.", "Goes to Anthropic or OpenAI: Claude/Codex polishes it.")
                        : L("Остаётся на этом Mac.", "Stays on this Mac."),
                  out: cloud, pane: .text)
             FormDivider()
             let context = cloud && s.polish.context.enabled && s.polish.context.toCloud
             line(L("Текст вокруг курсора", "Text around the cursor"),
-                 context ? L("Уходит в Anthropic вместе с диктовкой.", "Goes to Anthropic with the dictation.")
+                 context ? L("Уходит в Anthropic или OpenAI вместе с диктовкой.", "Goes to Anthropic or OpenAI with the dictation.")
                          : L("В облако не уходит.", "Never goes to the cloud."),
                  out: context, pane: .text)
             FormDivider()
             let meetings = MeetingCloudPolicy.cloudAllowed(s)
             line(L("Расшифровки встреч", "Meeting transcripts"),
-                 meetings ? L("Уходят в Anthropic для заметок и сводки.", "Go to Anthropic for notes and summary.")
+                 meetings ? L("Уходят в Anthropic или OpenAI для заметок и сводки.", "Go to Anthropic or OpenAI for notes and summary.")
                           : L("Остаются на этом Mac.", "Stay on this Mac."),
                  out: meetings, pane: .meetings)
             FormDivider()
@@ -957,10 +957,10 @@ private struct LedgerLine: View {
 }
 
 private enum MeetingConsentText {
-    static var ledger: String { L("расшифровки встреч уходят в Anthropic", "meeting transcripts go to Anthropic") }
+    static var ledger: String { L("расшифровки встреч уходят в Anthropic или OpenAI", "meeting transcripts go to Anthropic or OpenAI") }
     static var warning: String {
-        L("Заметки, сводку и задачи сделает Claude по вашей подписке. Уйдёт текст расшифровки и пометки, звук — никогда. В расшифровке слова других участников, поэтому согласие отдельное от диктовки. Встречи «Только на этом Mac» не уходят.",
-          "Claude writes the notes, summary and tasks under your subscription. The transcript text and marks are sent, never audio. It holds other people’s words, so this consent is separate from dictation. Meetings marked “This Mac only” are never sent.")
+        L("Заметки, сводку и задачи сделает Claude или Codex по вашей подписке. Уйдёт текст расшифровки и пометки, звук — никогда. В расшифровке слова других участников, поэтому согласие отдельное от диктовки. Встречи «Только на этом Mac» не уходят.",
+          "Claude or Codex writes the notes, summary and tasks under your subscription. The transcript text and marks are sent, never audio. It holds other people’s words, so this consent is separate from dictation. Meetings marked “This Mac only” are never sent.")
     }
 
     static func block<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -999,7 +999,7 @@ private struct MeetingCloudOffer: View {
         if ai.offerAfterPolish && !MeetingCloudPolicy.cloudAllowed(model.settings) {
             MeetingConsentText.block {
                 VStack(alignment: .leading, spacing: DS.Space.s) {
-                    Text(L("Включить Claude и для встреч?", "Use Claude for meetings too?"))
+                    Text(L("Включить Claude/Codex и для встреч?", "Use Claude/Codex for meetings too?"))
                         .font(TType.bodyStrong).foregroundStyle(Palette.ink)
                     MeetingConsentText.warningRow()
                     LedgerLine(now: false, what: MeetingConsentText.ledger)
@@ -1041,7 +1041,7 @@ private struct MeetingNotesChoice: View {
                 hint: hint(on: on || pending),
                 details: L("После расшифровки пометки становятся заметками, появляются сводка и задачи. Модель та же, что причёсывает текст; ей уходит текст расшифровки, не звук. С Claude нужно отдельное согласие: в расшифровке чужие голоса. При смене модели Mostik спросит снова.",
                            "After transcription, marks become notes, plus a summary and tasks. Same model as polishing; it gets the transcript text, not audio. Claude needs a separate consent, since the transcript holds other people’s voices. Change the model and Mostik asks again.")) {
-            Segmented(options: [(false, L("Выкл", "Off")), (true, cloud ? "Claude" : L("На этом Mac", "On this Mac"))],
+            Segmented(options: [(false, L("Выкл", "Off")), (true, cloud ? "Claude/Codex" : L("На этом Mac", "On this Mac"))],
                       selection: Binding(get: { on || pending }, set: { choose($0) }))
                 .accessibilityLabel(L("Заметки, сводка и задачи", "Notes, summary and tasks"))
         }
@@ -1054,7 +1054,7 @@ private struct MeetingNotesChoice: View {
 
     private func hint(on: Bool) -> String {
         guard on else { return L("Встречи только расшифровываются.", "Meetings are only transcribed.") }
-        return cloud ? L("Через Claude по подписке: расшифровка уходит в Anthropic.", "Via Claude on your subscription: the transcript goes to Anthropic.")
+        return cloud ? L("Через Claude/Codex по подписке: расшифровка уходит в Anthropic или OpenAI.", "Via Claude/Codex on your subscription: the transcript goes to Anthropic or OpenAI.")
                      : L("Модель на этом Mac получает текст расшифровки, не звук.", "The on-device model gets the transcript text, never audio.")
     }
 

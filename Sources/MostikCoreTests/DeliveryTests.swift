@@ -86,6 +86,44 @@ func runDeliveryTests() {
         equal(PasteVerifier.combine(.unknown, .unknown), .unknown)
     }
 
+    // MARK: исправление слова во вставленном тексте
+    do {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let before = FieldState(value: "Ок", selection: CaretRange(location: 2, length: 0))
+        let after = FieldState(value: "Ок спроси клод", selection: CaretRange(location: 14, length: 0))
+        let record = InsertionRecord(entryID: "e", bundleID: "app", elementToken: 1, before: before, after: after,
+                                     insertedText: " спроси клод", rawText: "спроси клод", at: t0, check: .confirmed)
+        let fix = PendingTextFix(entryID: "e", text: " спроси Claude", at: t0.addingTimeInterval(5))
+        let same = FieldSnapshot(bundleID: "app", elementToken: 1, value: after.value, selection: after.selection)
+        let soon = t0.addingTimeInterval(30)
+        equal(TextFixPlanner.plan(fix, record: record, current: same, frontBundleID: "app", now: soon), .replace)
+        equal(TextFixPlanner.plan(fix, record: record, current: same, frontBundleID: "app.mostik.mac", now: soon), .wait,
+              "пока пользователь в Mostik — ждём")
+        var clicked = same; clicked.selection = CaretRange(location: 0, length: 0)
+        equal(TextFixPlanner.plan(fix, record: record, current: clicked, frontBundleID: "app", now: soon), .replace,
+              "курсор сдвинули щелчком — текст тот же, меняем")
+        var typed = same; typed.value = "Ок спроси клод!"
+        equal(TextFixPlanner.plan(fix, record: record, current: typed, frontBundleID: "app", now: soon),
+              .refuse(.fieldChanged), "дописали — не трогаем")
+        var otherField = same; otherField.elementToken = 9
+        equal(TextFixPlanner.plan(fix, record: record, current: otherField, frontBundleID: "app", now: soon),
+              .refuse(.focusChanged), "другое поле")
+        equal(TextFixPlanner.plan(fix, record: record, current: FieldSnapshot(bundleID: "app"), frontBundleID: "app", now: soon),
+              .refuse(.unreadable), "поле не прочитать — вслепую не меняем")
+        equal(TextFixPlanner.plan(fix, record: record, current: same, frontBundleID: "app",
+                                  now: t0.addingTimeInterval(TextFixPlanner.window + 1)), .refuse(.expired))
+        equal(TextFixPlanner.plan(PendingTextFix(entryID: "old", text: "x"), record: record, current: same,
+                                  frontBundleID: "app", now: soon), .nothing, "исправление к прошлой диктовке")
+        equal(TextFixPlanner.plan(PendingTextFix(entryID: "e", text: " спроси клод"), record: record, current: same,
+                                  frontBundleID: "app", now: soon), .nothing, "текст не изменился")
+        var failed = record; failed.check = .notInserted
+        equal(TextFixPlanner.plan(fix, record: failed, current: same, frontBundleID: "app", now: soon), .nothing)
+        check(TextFixPlanner.undoRestored(before: before, now: before), "⌘Z вернул поле как было")
+        check(!TextFixPlanner.undoRestored(before: before, now: FieldState(value: "Ок", selection: CaretRange(location: 0, length: 0))),
+              "курсор не там — исправленный текст не вставляем")
+        check(!TextFixPlanner.undoRestored(before: before, now: after), "⌘Z не сработал")
+    }
+
     // MARK: R4, A7 — откат
     do {
         let t0 = Date(timeIntervalSince1970: 1_000_000)

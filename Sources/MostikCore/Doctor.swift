@@ -205,7 +205,7 @@ public enum Doctor {
         if f.llmBackend == "off" {
             out.append(.init(kind: .llm, status: .ok, detail: t("Не используется: причёсывание выключено.", "Not used: polish is off.")))
         } else {
-            let name = f.llmBackend == "claude" ? "Claude" : (f.llmBackend == "mlx" ? t("локальная модель", "local model") : f.llmBackend)
+            let name = f.llmBackend == "claude" ? "Claude/Codex" : (f.llmBackend == "mlx" ? t("локальная модель", "local model") : f.llmBackend)
             switch f.llmAvailable {
             case true?:
                 out.append(.init(kind: .llm, status: .ok, detail: t("Готов к работе: \(name).", "Ready: \(name).")))
