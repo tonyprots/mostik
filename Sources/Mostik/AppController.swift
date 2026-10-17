@@ -195,7 +195,7 @@ final class AppController {
         self.engine = EngineClient(config: Self.engineConfig(settings: settings, paths: paths))
         model.settings = settings
         EngineClient.cloudGrants = CloudGrants(settings: settings)  // приватность: поле consent облачных команд
-        model.currentProject = settings.projectPath
+        model.currentProject = settings.codeProjectPath
         machine.doubleTapEnabled = settings.handsFreeDoubleTap
         windows.model = model
         windows.onHUDShown = { [weak self] phase in
@@ -702,7 +702,7 @@ final class AppController {
         let bundlePath = frontApp?.bundleURL?.path
         let ownApp = pid == ProcessInfo.processInfo.processIdentifier
         let agentCLIs = settings.agentPolicy.agentCLIs
-        let autoProject = settings.autoProject && frontApp != nil && !ownApp
+        let autoProject = settings.codeAutoProject && frontApp != nil && !ownApp
         let inspector = self.inspector
         let detector = self.projectDetector
         perf?.begin("plan")
@@ -1316,10 +1316,10 @@ final class AppController {
             Task { _ = try? await engine.warmup(language: new.language, polishBackend: backend) }
         }
         if new.projectPath != old.projectPath { refreshFallbackProject() }
-        if new.projectPath != old.projectPath || new.autoProject != old.autoProject {
-            // Ручной проект или выключенный автопоиск меняют проект сразу, не дожидаясь диктовки.
-            if !(currentProjectIsAuto && new.autoProject) {
-                setCurrentProject(new.projectPath, auto: false)
+        if new.codeProjectPath != old.codeProjectPath || new.codeAutoProject != old.codeAutoProject {
+            // Ручной проект, выключенный автопоиск или термины из кода меняют проект сразу, не дожидаясь диктовки.
+            if !(currentProjectIsAuto && new.codeAutoProject) {
+                setCurrentProject(new.codeProjectPath, auto: false)
             }
         }
         if new.extraSources != old.extraSources { refreshSources(rescan: false) }
@@ -1478,6 +1478,7 @@ final class AppController {
             guard panel.runModal() == .OK, let picked = panel.url else { return }
             settings.projectPath = picked.path
         }
+        settings.codeTerms = true  // папку проекта выбрали руками — значит, термины из кода нужны
         applySettings(settings)
     }
 
@@ -1502,8 +1503,8 @@ final class AppController {
     /// `detected` — найденный вне главного потока на старте записи (шаг 1, п. 1).
     private func resolveProject(detected: String?) -> String? {
         let settings = model.settings
-        let effective = ProjectResolver.effectiveProject(detected: detected, autoEnabled: settings.autoProject,
-                                                         manual: settings.projectPath)
+        let effective = ProjectResolver.effectiveProject(detected: detected, autoEnabled: settings.codeAutoProject,
+                                                         manual: settings.codeProjectPath)
         setCurrentProject(effective.path, auto: effective.auto)
         return effective.path
     }

@@ -211,6 +211,18 @@ do {
     check(ProjectResolver.effectiveProject(detected: "/a", autoEnabled: false, manual: "/m") == ("/m", false), "авто выключено")
     check(ProjectResolver.effectiveProject(detected: nil, autoEnabled: true, manual: nil) == (nil, false), "без проекта")
 
+    // Термины из кода — режим разработчика: по умолчанию выключен, и старый файл настроек его не включает.
+    var codeOff = MostikSettings()
+    codeOff.projectPath = "/m"
+    check(!codeOff.codeTerms, "термины из кода выключены по умолчанию")
+    check(codeOff.codeProjectPath == nil && !codeOff.codeAutoProject, "без режима разработчика проект не берётся")
+    check(ProjectResolver.effectiveProject(detected: "/a", autoEnabled: codeOff.codeAutoProject,
+                                           manual: codeOff.codeProjectPath) == (nil, false), "найденный проект тоже не берётся")
+    let oldFile = MostikSettings.decode(Data(#"{"autoProject": true, "projectPath": "/m"}"#.utf8))
+    check(oldFile?.codeTerms == false && oldFile?.codeProjectPath == nil, "старые настройки: термины из кода выключены")
+    codeOff.codeTerms = true
+    check(codeOff.codeProjectPath == "/m" && codeOff.codeAutoProject, "включили — проект и автопоиск как раньше")
+
     var buf: [UInt8] = [2, 0, 0, 0]
     buf += Array("/opt/homebrew/bin/node".utf8) + [0, 0, 0]
     buf += Array("node".utf8) + [0] + Array("/opt/homebrew/bin/codex".utf8) + [0] + Array("PATH=/bin".utf8) + [0]
