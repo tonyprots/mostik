@@ -103,6 +103,10 @@ def test_walk_never_leaves_the_repo_through_symlinks(tmp_path, with_git):
 def test_git_listing_runs_no_repo_hooks_or_fsmonitor(tmp_path):
     from mostik_engine import project_glossary as pg
 
+    developer = subprocess.run([pg.XCODE_SELECT, "-p"], capture_output=True, text=True).stdout.strip()
+    if pg.git_executable(developer) is None:
+        # Xcode не от root (раннер CI, Xcodes) — git не доверяем, список строится обходом папки.
+        pytest.skip("нет git в системной папке разработчика с цепочкой root")
     repo = _hostile_repo(tmp_path, with_git=True)
     marker = tmp_path / "PWNED"
     hook = tmp_path / "fsmonitor.sh"

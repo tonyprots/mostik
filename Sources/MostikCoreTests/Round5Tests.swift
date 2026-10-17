@@ -94,7 +94,7 @@ func runRound5TmuxTests() {
 /// Git — по пути из `xcode-select -p`, только из системных мест и только если файл есть.
 func runRound5GitPathTests() {
     let exists: (String) -> Bool = { $0 == "/Library/Developer/CommandLineTools/usr/bin/git"
-        || $0 == "/Applications/Xcode.app/Contents/Developer/usr/bin/git" }
+        || $0 == "/Applications/Xcode-Fixture.app/Contents/Developer/usr/bin/git" }
     // Ф-1: владелец проверяется отдельно (runP10TailGitOwnerTests), здесь — только форма пути.
     let rootOnly: (String) -> SafeGit.PathStatus? = { _ in SafeGit.PathStatus(uid: 0, mode: 0o755, isSymlink: false) }
     func executable(developerDir: String?, isExecutable: (String) -> Bool) -> String? {
@@ -104,10 +104,10 @@ func runRound5GitPathTests() {
           "/Library/Developer/CommandLineTools/usr/bin/git", "CLT")
     equal(executable(developerDir: "/Library/Developer/CommandLineTools/\n", isExecutable: exists),
           "/Library/Developer/CommandLineTools/usr/bin/git", "хвост вывода xcode-select")
-    equal(executable(developerDir: "/Applications/Xcode.app/Contents/Developer", isExecutable: exists),
-          "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "Xcode")
+    equal(executable(developerDir: "/Applications/Xcode-Fixture.app/Contents/Developer", isExecutable: exists),
+          "/Applications/Xcode-Fixture.app/Contents/Developer/usr/bin/git", "Xcode")
     for bad in ["/tmp/evil", "/Users/a/Library/Developer/CommandLineTools", "/Applications/../tmp/x.app/Contents/Developer",
-                "/Applications/Xcode.app/Contents/Developer/../../../../tmp", "CommandLineTools", "", "/"] {
+                "/Applications/Xcode-Fixture.app/Contents/Developer/../../../../tmp", "CommandLineTools", "", "/"] {
         equal(executable(developerDir: bad, isExecutable: { _ in true }), nil, "Р5-2: не системный путь — \(bad)")
     }
     equal(executable(developerDir: nil, isExecutable: { _ in true }), nil, "xcode-select не ответил")
@@ -214,12 +214,12 @@ func runP10TailGitOwnerTests() {
     let fm = FileManager.default
     let base = tempDir("owner")
     defer { try? fm.removeItem(at: base) }
-    let developer = "/Applications/Xcode.app/Contents/Developer"
+    let developer = "/Applications/Xcode-Fixture.app/Contents/Developer"
     let bin = base.path + developer + "/usr/bin"
     try? fm.createDirectory(atPath: bin, withIntermediateDirectories: true)
     let git = bin + "/git"
     fm.createFile(atPath: git, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
-    for dir in ["/Applications/Xcode.app", "/Applications/Xcode.app/Contents", developer, developer + "/usr",
+    for dir in ["/Applications/Xcode-Fixture.app", "/Applications/Xcode-Fixture.app/Contents", developer, developer + "/usr",
                 developer + "/usr/bin"] {
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: base.path + dir)
     }
@@ -236,7 +236,7 @@ func runP10TailGitOwnerTests() {
     equal(SafeGit.executable(developerDir: developer, isExecutable: exists, status: asRoot), developer + "/usr/bin/git",
           "Ф-1: цепочка root без записи группе — git из Xcode")
     // Любое звено, открытое на запись группе или прочим, — отказ; и сам файл тоже.
-    for (link, mode) in [("/Applications/Xcode.app", 0o775), ("/Applications/Xcode.app/Contents", 0o757),
+    for (link, mode) in [("/Applications/Xcode-Fixture.app", 0o775), ("/Applications/Xcode-Fixture.app/Contents", 0o757),
                          (developer, 0o775), (developer + "/usr/bin", 0o777), (developer + "/usr/bin/git", 0o775)] {
         try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: mapped(link))
         equal(SafeGit.executable(developerDir: developer, isExecutable: exists, status: asRoot), nil,
