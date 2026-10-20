@@ -1,4 +1,5 @@
 import AppKit
+import MostikKit
 import Combine
 import SwiftUI
 import MostikCore
@@ -91,7 +92,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     /// Перетаскивание плашки: где был курсор и плашка, когда начали тянуть.
     private var hudDragStart: (mouse: NSPoint, origin: NSPoint)?
     /// Своё место плашки — доля видимой области экрана (`HUDPosition`); nil — по умолчанию.
-    private static let hudPositionKey = "hudPosition"
+    private static let hudPositionKey = HUDPosition.defaultsKey
     private var consentWindow: NSWindow?
     private var meetingCancellables: [AnyCancellable] = []
     /// Плашка вышла на экран (замер `hud.shown`, шаг 0).
@@ -180,14 +181,14 @@ final class WindowManager: NSObject, NSWindowDelegate {
             })
             return
         }
-        let panel = hudPanel ?? makeHUDPanel()
+        var panel = hudPanel ?? makeHUDPanel()
         hudPanel = panel
         let wasVisible = panel.isVisible && !hudFading
         hudFading = false
         // Плашка ловит мышь, только когда в ней есть что нажать: итог с сомнениями — ссылка в историю (П9-B),
         // запись — меню языка (R3b). Панель не активирующая: клик не уводит фокус из поля ввода.
         switch phase {
-        case let .done(_, doubts, _) where doubts > 0:
+        case let .done(_, doubts, _, spelling) where doubts > 0 || spelling != nil:
             panel.ignoresMouseEvents = false
         case .recording where !(model?.voiceEdit.isShowing ?? false):
             panel.ignoresMouseEvents = false
@@ -199,11 +200,26 @@ final class WindowManager: NSObject, NSWindowDelegate {
         if HUDPlacement.reposition(wasVisible: wasVisible, phaseVisible: true) { positionHUD(panel) }
         if !panel.isVisible { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
+        // Долгоживущая панель бывает «прилипшей» к другому пространству: над полноэкранным окном
+        // она выводится с прозрачностью 1, но на экране её нет. Не на текущем пространстве — новая панель.
+        if !panel.isOnActiveSpace {
+            AppLog.shared.event("hud", "panel not on active space, recreated")
+            let fresh = makeHUDPanel()
+            fresh.ignoresMouseEvents = panel.ignoresMouseEvents
+            fresh.setFrameOrigin(panel.frame.origin)
+            fresh.alphaValue = 0
+            panel.orderOut(nil)
+            panel.contentView = nil
+            hudPanel = fresh
+            panel = fresh
+            panel.orderFrontRegardless()
+        }
         if panel.alphaValue < 1 {
+            let target = panel
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = HUDPlacement.showDuration
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().alphaValue = 1
+                target.animator().alphaValue = 1
             }
         }
         onHUDShown?(phase)

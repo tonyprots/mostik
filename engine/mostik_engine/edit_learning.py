@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .speech_rules import is_number_word
 from .textnorm import stem
 from .wordlists import is_natural_word
 
@@ -158,6 +159,12 @@ def _term_like(word: str) -> bool:
     return word[:1].isupper() and not is_natural_word(word)
 
 
+def _numbers_only(words: list[str]) -> bool:
+    """Все слова — число цифрами или словами: «двадцать первого», «21-го»."""
+    bare = [word.strip(".,;:!?…") for word in words]
+    return bool(bare) and all(_DIGIT.search(word) or is_number_word(word) for word in bare if word)
+
+
 def judge(pair: EditPair) -> Verdict:
     heard, fixed = pair.heard, pair.fixed
     sound = round(phonetic_similarity(heard, fixed), 3)
@@ -175,6 +182,11 @@ def judge(pair: EditPair) -> Verdict:
     if {w.casefold() for w in heard_words} & _NEGATIONS != {w.casefold() for w in fixed_words} & _NEGATIONS:
         return verdict(False, "negation")
     if _DIGIT.search(heard) and _DIGIT.search(fixed):
+        return verdict(False, "number")
+    # «девятнадцать → 19»: как писать число, решает правило «числа цифрами», запоминать нечего.
+    if (_DIGIT.search(heard) or _DIGIT.search(fixed)) and (
+        _numbers_only(heard_words) or _numbers_only(fixed_words)
+    ):
         return verdict(False, "number")
     if len(heard_words) == len(fixed_words) and all(
         stem(a.casefold()) == stem(b.casefold()) for a, b in zip(heard_words, fixed_words)

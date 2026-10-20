@@ -107,3 +107,22 @@ def test_quoted_ui_labels_are_not_names():
 def test_codename_trigger_chain_and_units():
     found = ex.terms_from_document("Слова «проект», «клиент», «project», «codename» ведут к имени. Нужно 4 ГБ и 2 МБ.\n")
     assert not set(found) & {"клиент", "project", "codename", "ГБ", "МБ"}
+
+
+def test_transcript_labels_start_a_phrase():
+    # Живые строки расшифровок 2026-10-19: «Короче», «Перекрытие», «Независимый» попадали в имена людей.
+    text = ("[00:07:40.672] Спикер 1: Короче, не вижу смысла.\n"
+            "[00:00:40.020] Перекрытие (Спикер 2 + Спикер 3): Нет, я имею в виду\n"
+            "- Причина: Независимый mlx-community: различаются токены\n") * 2
+    found = ex.terms_from_document(text, markdown=True)
+    assert not set(found) & {"Короче", "Перекрытие", "Независимый", "Нет"}
+
+
+def test_plain_english_words_are_not_terms():
+    # Строчное английское слово по словарю macOS — не термин; заглавная, цифры, «_» — термин.
+    assert ex.rejected("row") and ex.rejected("frames") and ex.rejected("video")
+    for word in ("launchd", "React", "S3", "load_vad", "GigaAM"):
+        assert not ex.rejected(word), word
+    got = set(ex.terms_from_document("Вчера сохраняли каждую row и каждое video через launchd, а потом переписали на React.\n"))
+    assert "launchd" in got and "React" in got
+    assert not got & {"row", "video"}

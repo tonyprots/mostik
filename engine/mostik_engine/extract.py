@@ -5,7 +5,7 @@
 двух раз на источник), кодовые имена после «проект», «клиент», «project»,
 «codename», слова из заголовков Markdown, латинские слова в русском тексте.
 
-Выбрасываем: словарные слова, числа и версии, хэши, почту, логины, URL, пути,
+Выбрасываем: словарные слова (и любое английское слово строчными по словарю macOS), числа и версии, хэши, почту, логины, URL, пути,
 слова короче 3 символов (кроме аббревиатур и сочетаний буквы с цифрой: `S3`).
 
 Чистые функции без файлов: на вход текст, на выход
@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from .wordlists import is_common, is_natural_word
+from .wordlists import is_common, is_natural_word, is_plain_english
 
 KINDS = ("person", "project", "tech", "acronym", "identifier")
 MIN_LENGTH = 3
@@ -40,6 +40,8 @@ _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 _CAMEL = re.compile(r"[a-zа-яё0-9][A-ZА-ЯЁ]|[A-ZА-ЯЁ]{2}[a-zа-яё]")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 _LIST_MARK = re.compile(r"^(?:[-*+>|]+|\d+[.)])$")
+# Таймкод расшифровки «[00:07:40.672]» — начало реплики, как маркер списка.
+_TIMESTAMP = re.compile(r"^[\[(]?\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d+)?[\])]?$")
 _SENTENCE_END = ".!?…"
 _CODENAME_TRIGGER = re.compile(r"^(?:проект\w*|клиент\w*|project|codename|кодов\w*)$", re.IGNORECASE)
 # Пары-исключения из двух букв, которые выглядят аббревиатурой, но ею не служат.
@@ -85,7 +87,7 @@ def rejected(word: str) -> bool:
         return is_natural_word(word)
     if "_" in word or _HAS_DIGIT.search(word):
         return False
-    return is_common(word)
+    return is_common(word) or is_plain_english(word)
 
 
 def shape_kind(word: str) -> str | None:
@@ -134,10 +136,12 @@ def _words(line: str) -> Iterable[tuple[str, bool, bool]]:
     """(слово, начало предложения, закончилось ли предложение после слова)."""
     sentence_start = True
     for chunk in line.split():
-        if _LIST_MARK.match(chunk):
+        if _LIST_MARK.match(chunk) or _TIMESTAMP.match(chunk):
             sentence_start = True
             continue
-        ends = chunk.rstrip("»\"')]*_").endswith(tuple(_SENTENCE_END))
+        # После метки с двоеточием («Спикер 1:», «Причина:») начинается новая фраза:
+        # заглавная за ней — начало реплики («Короче, …»), а не имя.
+        ends = chunk.rstrip("»\"')]*_").endswith((*_SENTENCE_END, ":"))
         if is_noise_chunk(chunk):
             sentence_start = ends
             continue

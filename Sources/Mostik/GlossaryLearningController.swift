@@ -60,7 +60,6 @@ final class GlossaryLearningController {
     /// Вставка дошла: следим за полем. Прошлое слежение досчитывается сразу.
     func inserted(_ record: InsertionRecord) {
         finishWatch()
-        scheduleChip(for: record.entryID)
         guard model.settings.learnFromEdits, record.check != .notInserted, record.after != nil else { return }
         watch = Watch(record: record, started: Date(), last: record.after?.value)
         timer = Timer.scheduledTimer(withTimeInterval: EditWatch.interval, repeats: true) { [weak self] _ in
@@ -122,20 +121,8 @@ final class GlossaryLearningController {
 
     // MARK: L2 — «Запомнить написание»
 
-    /// Карточка после вставки — только если в диктовке были правки словаря, а сомнений нет:
-    /// с сомнениями плашка сама ведёт в диктовку («2 слова под вопросом ›»), и вторая
-    /// всплывашка о том же была лишней (Антон). На каждой вставке кнопка была бы шумом.
-    private func scheduleChip(for entryID: String) {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            guard let self, self.learning.prompt == nil,
-                  let entry = self.model.history.first(where: { $0.id == entryID }),
-                  LearnPromptPolicy.showsSpellingChip(doubts: entry.doubts.count,
-                                                      corrections: entry.corrections.count) else { return }
-            self.learning.spellingChipEntry = entryID
-            self.presentPanel(hideAfter: 5)
-        }
-    }
+    /// «Запомнить написание…» после вставки — не отдельная карточка, а хвост плашки итога
+    /// «Вставлено · поправить слово ›» (`AppModel.HUDPhase.done(spelling:)`): две плашки разом путали (Антон).
 
     private func openSpelling(_ entryID: String) {
         hidePrompt()
@@ -213,15 +200,15 @@ final class GlossaryLearningController {
     // MARK: карточка над HUD
 
     private func showPrompt(_ suggestion: GlossarySuggestion) {
-        learning.spellingChipEntry = nil
         learning.prompt = suggestion
+        // Карточка встаёт на место плашки, а не над ней: итог, если ещё виден, уступает место.
+        if case .done = model.hud { model.hud = .hidden }
         presentPanel(hideAfter: 15)
     }
 
     private func hidePrompt() {
         hideTask?.cancel()
         learning.prompt = nil
-        learning.spellingChipEntry = nil
         panel?.orderOut(nil)
     }
 
@@ -256,12 +243,16 @@ final class GlossaryLearningController {
         return panel
     }
 
-    /// Над пилюлей диктовки, снизу по центру экрана с курсором.
+    /// На месте плашки диктовки — с учётом того, куда её перетащили (`HUDPosition`), на экране с курсором.
     private func position(_ panel: NSPanel) {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
+        let screens = NSScreen.screens
+        guard let index = HUDPosition.screenIndex(mouse: NSEvent.mouseLocation, screens: screens.map(\.frame)) else { return }
+        let visible = screens[index].visibleFrame
+        let saved = HUDPosition.decode(UserDefaults.standard.data(forKey: HUDPosition.defaultsKey))
+        let hud = HUDPosition.origin(saved: saved, plaque: HUDView.size, visible: visible)
         let size = LearnPromptCard.size
-        panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + 40 + 76 + 8))
+        let x = min(max(hud.x + (HUDView.size.width - size.width) / 2, visible.minX), visible.maxX - size.width)
+        let y = min(max(hud.y + (HUDView.size.height - size.height) / 2, visible.minY), visible.maxY - size.height)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }

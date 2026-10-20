@@ -9,6 +9,8 @@ public enum FocusedField {
     /// Больше этого значение поля не читаем: огромный документ — секунды на обмен с приложением.
     public static var valueLimit = 200_000
     private static var engines: [String: AppTextEngine] = [:]
+    /// Процессы Electron, у которых уже попросили дерево Accessibility.
+    private static var manualAccessibilityPIDs: Set<pid_t> = []
 
     /// Снимок поля в фокусе; nil — нет доступа или ничего не в фокусе.
     public static func snapshot() -> FieldSnapshot? {
@@ -17,6 +19,7 @@ public enum FocusedField {
         AXUIElementSetMessagingTimeout(system, 0.25)
         var focused: CFTypeRef?
         let front = NSWorkspace.shared.frontmostApplication
+        if let front { requestManualAccessibility(front) }
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
             guard let front else { return nil }
@@ -45,6 +48,17 @@ public enum FocusedField {
         snapshot.value = string(element, kAXValueAttribute)
         snapshot.selection = range(element, kAXSelectedTextRangeAttribute)
         return snapshot
+    }
+
+    /// Один раз на процесс: Chromium строит дерево лениво, поэтому просьба в снимке начала записи
+    /// успевает к проверке вставки, а самый первый снимок поле может ещё не прочитать.
+    private static func requestManualAccessibility(_ app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard pid > 0, !manualAccessibilityPIDs.contains(pid), engine(for: app).needsManualAccessibility else { return }
+        manualAccessibilityPIDs.insert(pid)
+        let element = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
 
     /// Состояние поля для проверки вставки и отката.

@@ -12,7 +12,6 @@ public final class GlossaryLearningModel: ObservableObject {
     /// Предложение в карточке над HUD прямо сейчас.
     @Published public var prompt: GlossarySuggestion? = nil
     /// Карточка после вставки: «Запомнить написание…» для этой диктовки.
-    @Published public var spellingChipEntry: String? = nil
     /// Открыть форму «Запомнить написание» у этой диктовки во вкладке «Диктовка».
     @Published public var spellingEntryID: String? = nil
     /// Какие приложения для импорта нашлись на диске (по метаданным): "handy", "wispr".

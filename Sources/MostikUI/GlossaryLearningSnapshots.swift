@@ -14,10 +14,6 @@ extension Snapshots {
             learning.prompt = suggestion
             write(stage(LearnPromptCard(learning: learning)), "hud-learn-suggestion" + suffix(dark), dir,
                   width: 480, height: 96, dark: dark)
-            let chip = GlossaryLearningModel()
-            chip.spellingChipEntry = "d1"
-            write(stage(LearnPromptCard(learning: chip)), "hud-learn-spelling" + suffix(dark), dir,
-                  width: 480, height: 96, dark: dark)
         }
 
         // «Словарь» → личный: колонки (L3), предложения из правок (L1), просмотр импорта (L6).

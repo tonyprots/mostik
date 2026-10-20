@@ -920,6 +920,8 @@ final class AppController {
             if self.abandonedSessions.remove(id) != nil { self.keepCancelled(id: id, result: result); return }
             guard self.machine.currentSession == id else { return }
             self.session?.result = result
+            // Сверка кончилась: полоса «Сверяю» добегает до конца, пока идёт вставка (ProgressCreep).
+            if self.model.verifyProgress != nil { self.model.verifyProgress = 1 }
             self.apply(self.machine.handle(.resultReady))
         }
     }
@@ -1133,8 +1135,13 @@ final class AppController {
         }
         switch outcome {
         case .inserted:
-            let summary = agentVoice.summary(for: route) ?? (route.submit ? (ru ? "Отправлено" : "Sent") : (ru ? "Вставлено" : "Inserted"))
-            if ownsHUD(id) { model.hud = .done(summary: summary, doubts: shownDoubts, agent: agent) }
+            var summary = agentVoice.summary(for: route) ?? (route.submit ? (ru ? "Отправлено" : "Sent") : (ru ? "Вставлено" : "Inserted"))
+            if report.check == .unknown, route.pane == nil { summary += ru ? " · копия в буфере" : " · copy on clipboard" }
+            // Правка словаря без сомнений — «поправить слово ›» в той же плашке (L2), не отдельная карточка.
+            let spelling = LearnPromptPolicy.showsSpellingChip(doubts: shownDoubts, corrections: result.corrections.count) ? id : nil
+            // Полная полоса «Сверяю» видна мгновение, прежде чем плашка сменится итогом.
+            if model.verifyProgress != nil { try? await Task.sleep(for: .seconds(ProgressCreep.finishHold)) }
+            if ownsHUD(id) { model.hud = .done(summary: summary, doubts: shownDoubts, agent: agent, spelling: spelling) }
         case .clipboard(let reason) where reason == DeliveryReason.notInserted.rawValue:
             // R2: поле не изменилось — карточка, текст в буфере и в истории.
             delivery.notice(ru ? "Текст не вставлен" : "Text not inserted",
@@ -1214,7 +1221,7 @@ final class AppController {
         model.partialText = ""
         apply(machine.handle(.inserted))
         // Итог с сомнениями — ссылка в историю (П9-B): держим его дольше, чтобы успеть нажать.
-        if case let .done(_, doubts, _) = model.hud, doubts > 0 {
+        if case let .done(_, doubts, _, spelling) = model.hud, doubts > 0 || spelling != nil {
             scheduleHUDHide(after: 4)
         } else {
             scheduleHUDHide(after: 1.2)

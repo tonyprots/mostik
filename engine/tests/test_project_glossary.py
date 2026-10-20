@@ -36,7 +36,7 @@ def test_terms_from_code_headings_and_dependencies(tmp_path):
     terms = set(result["terms"])
     # Целые имена и их части.
     assert {"EngineClient", "load_vad", "reconcile_windows", "PasteOutcome", "ClipboardSnapshot"} <= terms
-    assert {"vad", "reconcile", "Paste", "Outcome", "Clipboard", "Snapshot"} <= terms
+    assert {"vad", "Paste", "Outcome", "Clipboard", "Snapshot"} <= terms
     assert "engine_client" in terms  # имя файла-модуля
     # Заголовки и зависимости.
     assert {"Mostik", "Silero", "GigaAM"} <= terms
@@ -44,6 +44,7 @@ def test_terms_from_code_headings_and_dependencies(tmp_path):
     # Исключённые каталоги и общеупотребительные слова.
     assert "hiddenThing" not in terms
     assert not terms & {"load", "client", "engine", "text", "class", "self"}
+    assert "reconcile" not in terms  # строчная часть имени — обычное английское слово
     assert result["count"] == len(result["terms"])
 
 
@@ -117,3 +118,25 @@ def test_repo_markdown_keeps_code(tmp_path):
     make_repo(tmp_path)
     (tmp_path / "docs.md").write_text("# Заметки\n\nПравим `load_vad` и EngineClient.\n", encoding="utf-8")
     assert "load_vad" in set(pg.build(tmp_path)["terms"])
+
+
+def test_code_parts_skip_plain_english_but_keep_dependencies(tmp_path):
+    make_repo(tmp_path)
+    (tmp_path / "build_workbook.py").write_text("def add_row(frame):\n    pass\n\nclass VadRunner:\n    pass\n",
+                                                encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"dependencies": {"react": "1", "whisper": "2"}}', encoding="utf-8")
+    terms = set(pg.build(tmp_path)["terms"])
+    assert {"add_row", "VadRunner", "react", "whisper"} <= terms
+    assert not terms & {"row", "workbook", "frame", "build"}
+
+
+def test_transcript_folders_are_skipped(tmp_path):
+    (tmp_path / "PROJECT.md").write_text("# Альфа\n\nРаботаем с ClickHouse и Телемостом.\n", encoding="utf-8")
+    rec = tmp_path / "meeting-transcripts" / "rec-17"
+    rec.mkdir(parents=True)
+    for name in ("segments.json", "manifest.json"):
+        (rec / name).write_text("{}", encoding="utf-8")
+    (rec / "readable.md").write_text("Говорили про Зюзюкин и Зюзюкин снова.\n", encoding="utf-8")
+    terms = set(pg.build(tmp_path, kind="docs")["terms"])
+    assert "ClickHouse" in terms
+    assert "Зюзюкин" not in terms
