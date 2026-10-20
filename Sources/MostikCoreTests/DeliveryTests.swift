@@ -84,6 +84,12 @@ func runDeliveryTests() {
         equal(PasteVerifier.combine(.notInserted, .notInserted), .notInserted)
         equal(PasteVerifier.combine(.notInserted, .unknown), .unknown)
         equal(PasteVerifier.combine(.unknown, .unknown), .unknown)
+        check(PasteVerifier.restoresClipboard(after: .confirmed), "дошло — прежний буфер возвращается")
+        check(!PasteVerifier.restoresClipboard(after: .unknown), "неизвестно — диктовка остаётся в буфере")
+        check(!PasteVerifier.restoresClipboard(after: .notInserted), "не дошло — диктовка остаётся в буфере")
+        check(AppTextEngine.electron.needsManualAccessibility, "Electron: дерево поля — по просьбе")
+        check(!AppTextEngine.native.needsManualAccessibility && !AppTextEngine.gecko.needsManualAccessibility,
+              "Cocoa и Gecko отдают поле сами")
     }
 
     // MARK: исправление слова во вставленном тексте

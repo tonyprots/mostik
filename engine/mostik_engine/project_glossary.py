@@ -41,9 +41,9 @@ from typing import Any
 
 from . import paths
 from .extract import KINDS, rejected, shape_kind, terms_from_document
-from .wordlists import CODE_COMMON
+from .wordlists import CODE_COMMON, is_plain_english
 
-CACHE_VERSION = 3  # 3: папки документов без кода
+CACHE_VERSION = 4  # 3: папки документов без кода; 4: без обычных английских слов и расшифровок
 LIMIT = 2000
 MIN_LENGTH = 3
 RESCAN_AFTER_S = 600.0
@@ -111,13 +111,17 @@ def _split_identifier(name: str) -> list[str]:
     return [name, *[part for part in parts if part != name]]
 
 
-def _keep(term: str) -> bool:
+def _keep(term: str, *, dependency: bool = False) -> bool:
+    """`dependency` — имя пакета из манифеста: `react`, `whisper` — названия, хоть и словарные слова."""
     if len(term) < MIN_LENGTH or term.isdigit():
         return False
     if not any(char.isalpha() for char in term):
         return False
     if term.casefold() in COMMON_WORDS:
         return False
+    # Часть или имя из кода, которое просто английское слово (`row`, `build_workbook` → workbook).
+    if is_plain_english(term):
+        return dependency
     # Версии и хэши — не термины и в коде (`v2`, `a3f9c1e`).
     return "_" in term or not rejected(term)
 
@@ -196,7 +200,7 @@ def _names_from_manifest(name: str, text: str) -> Found:
 
     for dependency in _dependency_names(name, text):
         line = line_of(dependency)
-        if _keep(dependency):
+        if _keep(dependency, dependency=True):
             _put(found, dependency, "tech", line, 3)
         for part in re.split(r"[-_.]", dependency):
             if part != dependency and _keep(part):
@@ -408,6 +412,15 @@ def looks_like_data(files: list[str]) -> bool:
     return data / len(files) >= DATA_DIR_SHARE
 
 
+# Папка расшифровки transcriber: рядом с `readable.md` и `review-needed.md` лежат эти файлы.
+# Там сгенерированная речь («Спикер 1: Короче, …»), а не словарь проекта.
+TRANSCRIPT_MARKERS = frozenset({"segments.json", "manifest.json"})
+
+
+def looks_like_transcript(files: list[str]) -> bool:
+    return TRANSCRIPT_MARKERS <= set(files)
+
+
 def looks_like_code(folder: Path, files: list[str]) -> bool:
     """Папка с кодом внутри папки документов: репозиторий, манифест или больше половины — исходники."""
     if any(name in MANIFESTS or name in CODE_MARKERS for name in files) or (folder / ".git").exists():
@@ -462,7 +475,7 @@ def _walk(root: Path, source: str = "repo"):
         relative = queue.popleft()
         visited += 1
         subdirs, files = list_dir(relative)
-        if relative and looks_like_data(files):
+        if relative and (looks_like_data(files) or looks_like_transcript(files)):
             continue
         if source != "repo" and relative and looks_like_code(root / relative, files):
             continue

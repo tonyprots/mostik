@@ -174,3 +174,111 @@ def test_english_replacement_only_for_russian():
     v = [seg("Pushed the button here.")]
     result = analyze(p, v, language="en")
     assert "Bataun" in result.segments[0].text
+
+
+def test_counting_from_raz_matches_digits():
+    # «Раз, два, … десять» против «1, 2, … 10» — один и тот же счёт, а не расхождение.
+    junk = GlossaryEntry("3,", ("там три,",), auto_apply=True)
+    result = run(["Раз, два, три, четыре, пять, шесть, семь, восемь, девять, десять."],
+                 ["1, 2, 3, 4, 5, 6, 7, 8, 9, 10."], personal=[junk])
+    assert result.doubts == []
+
+
+def test_raz_outside_counting_stays_a_word():
+    result = run(["Сделай это ещё раз и всё."], ["Сделай это ещё 1 и всё."])
+    assert "ещё раз" in result.segments[0].text
+    assert result.doubts == []  # цифра против слова — не вопрос пользователю
+
+
+def test_number_spelling_is_not_a_doubt():
+    # Пары из истории: проверяющая пишет число цифрами, основная — словами. Это решает правило
+    # «числа цифрами», а не пользователь.
+    for primary, verifier in [("восемнадцать, девятнадцать, двадцать.", "18, 18, 20."),
+                              ("Восемнадцатый нормально, девятнадцатый", "18 нормальный, 19"),
+                              ("Двадцать первый", "21"), ("Двадцать четвёртого", "до 4-5"),
+                              ("5 000", "пяти тысяч"), ("Главное, семей четыре", "угол на 7-4,")]:
+        assert select_doubts([_item(primary, verifier)], TermIndex())[0] == [], primary
+
+
+def test_digits_beside_garbled_words_stay_a_doubt():
+    # Основная исказила слова вокруг числа: сверяются слова без цифр, и они похожи.
+    doubts = select_doubts([_item("Ну Наслаждей.", "на слайде 7")], TermIndex())[0]
+    assert [d.suggestion for d in doubts] == ["на слайде 7"]
+
+
+def test_term_hit_replaces_only_its_piece():
+    # Термин совпал в двух словах длинного расхождения: заменять их, а не весь фрагмент.
+    notion = GlossaryEntry("Notion", ("ноушн",), auto_apply=False)
+    result = run(["Вчера мы открыли наушн и долго искали нужную страницу там."],
+                 ["Вчера в открытом Nation долго искали страничку."], personal=[notion])
+    assert [(d.heard, d.suggestion) for d in result.doubts] == [("наушн", "Notion")]
+
+
+def test_verifier_only_term_in_long_span_is_dropped():
+    # Термин только у проверяющей, а основная разошлась на всю фразу: точного места нет.
+    claude = GlossaryEntry("Claude", (), auto_apply=False)
+    items = [ReviewItem(0.0, 5.0, "x", "x", 0.2, (), "r", primary_span="мы потом все вместе пошли домой ужинать",
+                        verifier_span="Claude")]
+    assert select_doubts(items, TermIndex((), [claude]))[0] == []
+
+
+def test_verifier_only_term_in_short_span_is_kept():
+    claude = GlossaryEntry("Claude", (), auto_apply=False)
+    items = [ReviewItem(0.0, 5.0, "x", "x", 0.2, (), "r", primary_span="клон", verifier_span="Claude")]
+    doubts, _ = select_doubts(items, TermIndex((), [claude]))
+    assert [(d.heard, d.suggestion) for d in doubts] == [("клон", "Claude")]
+
+
+def _item(primary: str, verifier: str) -> ReviewItem:
+    return ReviewItem(0.0, 5.0, "x", "x", 0.2, (), "r", primary_span=primary, verifier_span=verifier)
+
+
+def test_primary_wrote_term_inside_long_span_is_not_doubt():
+    # Живой случай 2026-10-19: основная уже написала «Короче», а сомнение предлагало заменить им весь фрагмент.
+    items = [_item("CRM. Короче, CRM API, Plash and Go, SDK", "CRM, короче, CRM, API, Flash and Go")]
+    assert select_doubts(items, TermIndex(["Короче", "API"]))[0] == []
+
+
+def test_verifier_only_term_does_not_swallow_neighbours():
+    # «не вар четыре» → WorkSpace съел бы «четыре»; «истории про отпуск годовых» → History — полфразы.
+    items = [_item("не вар четыре.", "Workspace четыре."),
+             _item("истории про отпуск годовых", "история про отпуск, годовых")]
+    assert select_doubts(items, TermIndex(["WorkSpace", "History"]))[0] == []
+
+
+def test_same_term_on_both_sides_replaces_primary_piece():
+    items = [_item("Slids. Восемнадцатый, семнадцатый, шестнадцатый", "Slides 18, 17, 16")]
+    doubts, _ = select_doubts(items, TermIndex(["Slides"]))
+    assert [(d.heard, d.suggestion) for d in doubts] == [("Slids", "Slides")]
+
+
+def test_russian_word_is_not_a_plain_english_project_word():
+    # «видео» → video: русское слово, а не ошибка термина. Латинская опечатка того же слова — сомнение.
+    index = TermIndex(["video", "slides"])
+    assert index.match("видео") is None
+    assert select_doubts([_item("видео,", "video,")], index)[0] == []
+    assert index.match("Slids") is not None
+
+
+# Пары того же рода, что на записи 2026-10-20: проверяющая сдвинулась по фразе и выдала непохожие слова.
+NOISE_PAIRS = [
+    ("уходятся", "Jira"),
+    ("минут. Дальше", "на ленту отдыху. Про Dashboard"),
+    ("Вначале я понимаю, ты", "Цель отменяли"),
+    ("Деплойнг.", "API Deploying, деплой"),
+    ("Cloud Storage.", "клауд-сторадж."),
+    ("CRM.", "ЦРМ,"),
+    ("заказчика нормально.", "заказчики нормальные. Про Свету."),
+]
+
+
+def test_unlike_sounding_pairs_are_not_doubts():
+    for primary, verifier in NOISE_PAIRS:
+        assert select_doubts([_item(primary, verifier)], TermIndex())[0] == [], (primary, verifier)
+
+
+def test_like_sounding_pairs_stay_doubts():
+    name = ReviewItem(0.0, 5.0, "Позвал Кабанова на встречу", "Позвал Кобанова на встречу", 0.2, (),
+                      "r", primary_span="Кабанова", verifier_span="Кобанова")
+    for item in (name, _item("PHP-модуль,", "P2P модуль,")):
+        assert len(select_doubts([item], TermIndex())[0]) == 1, item.primary_span

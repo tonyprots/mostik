@@ -14,6 +14,10 @@ public struct CaretRange: Equatable, Sendable {
 /// и их элементы в фокусе AX пересоздаёт — сравнивать их по identity нельзя.
 public enum AppTextEngine: String, Equatable, Sendable {
     case native, electron, gecko
+
+    /// Chromium в Electron строит дерево страницы для Accessibility только по просьбе
+    /// (`AXManualAccessibility`); без неё поле в фокусе не читается и проверка вставки — всегда «неизвестно».
+    public var needsManualAccessibility: Bool { self == .electron }
 }
 
 /// Значение поля и каретка. Сравниваются при проверке вставки (R2) и перед откатом (R4).
@@ -162,6 +166,10 @@ public enum PasteVerifier {
         if first == .notInserted, second == .notInserted { return .notInserted }
         return .unknown
     }
+
+    /// Вернуть прежний буфер после ⌘V — только когда вставку видно в поле. При «неизвестно»
+    /// диктовка остаётся в буфере: поле не прочитать, и если текст не дошёл, его вставят ⌘V руками.
+    public static func restoresClipboard(after check: PasteCheck) -> Bool { check == .confirmed }
 }
 
 // MARK: R4, A7 — откат

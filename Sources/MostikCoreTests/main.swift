@@ -559,6 +559,8 @@ runSettingsInventoryTests()  // П9-А: опись Настроек — Settings
 runSettingsRouteTests()  // B1/B2: Настройки — вкладка главного окна, Dock пока окно открыто — SettingsRouteTests.swift
 runCopyGuardTests()  // copy-clarity 2026-10-12: запрещённые слова в русских строках — CopyGuardTests.swift
 runHUDHintTests()  // П9-B: подсказка «⌥ стоп · ⎋ отмена» в плашке записи
+runProgressCreepTests()  // полоса «Сверяю» ползёт сама и добегает до 100 % — ProgressCreepTests.swift
+runWarmMicSettleTests()  // сбой CoreAudio 2026-10-19: перенастройка после тишины
 runMicChoiceTests()  // R3b: выбор микрофона только для Mostik, системный вход не меняется
 runSilentInputWatchTests()  // залипший микрофон: нули → без обработки голоса → заново → предупреждение
 

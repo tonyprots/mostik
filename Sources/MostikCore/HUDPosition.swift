@@ -13,6 +13,9 @@ public enum HUDPosition {
         public init(x: Double, y: Double) { self.x = x; self.y = y }
     }
 
+    /// Ключ своего места в UserDefaults: по нему же встаёт карточка словаря на место плашки.
+    public static let defaultsKey = "hudPosition"
+
     /// Место по умолчанию: снизу по центру, в 40 pt над низом видимой области.
     public static let bottomInset: CGFloat = 40
     /// Плашка не прижимается к краю вплотную.

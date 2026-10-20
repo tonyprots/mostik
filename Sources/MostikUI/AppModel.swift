@@ -18,7 +18,9 @@ public final class AppModel: ObservableObject {
         case hidden
         case recording
         case transcribing
-        case done(summary: String, doubts: Int, agent: Bool)
+        /// `spelling` — id записи, где словарь поправил слово, а сомнений нет: итог ведёт к «Запомнить написание»
+        /// в той же плашке, без второй всплывашки над ней.
+        case done(summary: String, doubts: Int, agent: Bool, spelling: String? = nil)
         case error(String)
         /// Карточка доставки (R2, R4, H2): «Текст не вставлен» + что с ним стало.
         case notice(title: String, detail: String)

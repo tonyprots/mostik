@@ -106,3 +106,21 @@ func runSilentInputWatchTests() {
     check(!stuck.gaveUp, "восстановился — не «сдался»")
     equal(run(&stuck, seconds: 3, silent: true, vp: false), [], "после восстановления тишина — уже речь с паузами")
 }
+
+/// Сбой 2026-10-19: движок останавливали прямо на `AVAudioEngineConfigurationChange`, пока HAL
+/// пересобирал Bluetooth-агрегат. Сигналы склеиваются, перенастройка — одна, после тишины.
+func runWarmMicSettleTests() {
+    var settle = WarmMicPolicy.Settle()
+    equal(settle.fire(0), nil, "без сигналов таймеру нечего делать")
+    let first = settle.signal(formatChanged: false)
+    let second = settle.signal(formatChanged: true)
+    let third = settle.signal(formatChanged: false)
+    equal(settle.fire(first), nil, "таймер раннего сигнала молчит: пачка ещё идёт")
+    equal(settle.fire(second), nil, "и второго тоже")
+    equal(settle.fire(third), true, "последний таймер — одна перенастройка; формат сменился в пачке")
+    equal(settle.fire(third), nil, "повторно не срабатывает")
+    let alone = settle.signal(formatChanged: false)
+    equal(settle.fire(alone), false, "после сброса формат снова «не менялся»")
+    check(WarmMicPolicy.settleDelay >= 0.2 && WarmMicPolicy.settleDelay <= 0.5,
+          "пауза дольше пересборки агрегата (~150 мс в журнале) и незаметна при смене микрофона")
+}

@@ -269,6 +269,48 @@ _RU_ORDINAL = re.compile(
 _EN_ORDINAL = re.compile(r"^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\w+(?:th|ieth))$",
                          re.I)
 
+# Значение порядкового по основе: длинные основы раньше коротких («пятнадцат» раньше «пят»).
+_RU_ORDINAL_STEMS = (
+    ("одиннадцат", 11), ("двенадцат", 12), ("тринадцат", 13), ("четырнадцат", 14), ("пятнадцат", 15),
+    ("шестнадцат", 16), ("семнадцат", 17), ("восемнадцат", 18), ("девятнадцат", 19), ("двадцат", 20),
+    ("тридцат", 30), ("сороков", 40), ("пятидесят", 50), ("шестидесят", 60), ("семидесят", 70),
+    ("восьмидесят", 80), ("девяност", 90), ("двухсот", 200), ("трёхсот", 300), ("трехсот", 300),
+    ("четырёхсот", 400), ("четырехсот", 400), ("пятисот", 500), ("шестисот", 600), ("семисот", 700),
+    ("восьмисот", 800), ("девятисот", 900), ("сот", 100), ("тысячн", 1000), ("перв", 1), ("втор", 2),
+    ("трет", 3), ("четвёрт", 4), ("четверт", 4), ("пят", 5), ("шест", 6), ("седьм", 7), ("восьм", 8),
+    ("девят", 9), ("десят", 10),
+)
+# Окончание порядкового → наращение после цифр: «двадцать первого» → «21-го».
+_RU_ORDINAL_SUFFIX = {
+    "ый": "й", "ий": "й", "ой": "й", "ей": "й", "ая": "я", "ья": "я", "ое": "е", "ье": "е", "ые": "е", "ьи": "е",
+    "ого": "го", "ьего": "го", "ому": "му", "ьему": "му", "ым": "м", "ьим": "м", "ом": "м", "ьем": "м",
+    "ую": "ю", "ью": "ю", "ых": "х", "ьих": "х", "ыми": "ми", "ьими": "ми",
+}
+# Перед месяцем и «годом» наращение не пишут: «24 октября», «в 2026 году».
+_RU_BARE_AFTER = re.compile(
+    r"^(?:январ|феврал|март|апрел|ма[яйюе]|июн|июл|август|сентябр|октябр|ноябр|декабр|год)\w*$", re.I)
+
+
+def _ru_ordinal(word: str) -> tuple[int, str] | None:
+    """«двадцатого» → (20, "го"); не порядковое — None."""
+    low = word.lower()
+    for stem, value in _RU_ORDINAL_STEMS:
+        if low.startswith(stem) and low[len(stem):] in _RU_ORDINAL_SUFFIX:
+            return value, _RU_ORDINAL_SUFFIX[low[len(stem):]]
+    return None
+
+
+def is_number_word(word: str) -> bool:
+    """Числительное словом: количественное, порядковое или «тысяча» — «восемнадцать», «двадцатого»."""
+    return _ru_value(word) is not None or _ru_ordinal(word) is not None or _en_value(word) is not None
+
+
+def _joins(total: int, part: int) -> bool:
+    """«двадцать» + «первый», «две тысячи» + «шестом»: младший разряд у `total` свободен."""
+    unit = 10 if part < 10 else 100 if part < 100 else 1000
+    return total % unit == 0 and total > part
+
+
 _UNITS_RU = re.compile(
     r"^(?:%|процент\w*|рубл\w*|руб|долл\w*|евро|доллар\w*|копе\w*|цент\w*|минут\w*|мин|секунд\w*|сек|"
     r"час\w*|дн[еяи]\w*|день|сут\w*|недел\w*|месяц\w*|лет|год\w*|гб|мб|кб|тб|гигабайт\w*|мегабайт\w*|"
@@ -407,11 +449,42 @@ def _clock(tokens: list[str], start: int, end: int, hours: int) -> tuple[int, in
     minute = _parse_number(tokens, end, "ru")
     if minute is None or not minute[2] or not 10 <= minute[0] <= 59:
         return None
+    if minute[1] < len(tokens) and _ru_ordinal(tokens[minute[1]]) is not None:
+        return None  # «в десять двадцать пятого» — это дата, а не 10:20
     return minute[0], minute[1]
 
 
 _FRACTIONS_RU = {"десятых": 10, "десятая": 10, "десятую": 10, "сотых": 100, "сотая": 100, "сотую": 100,
                  "тысячных": 1000, "тысячная": 1000}
+
+
+def _ordinal_number(tokens: list[str], start: int,
+                    parsed: tuple[int, int, bool] | None) -> tuple[int, int, str] | None:
+    """Порядковое с позиции `start`: «восемнадцатый», «двадцать первого», «две тысячи двадцать шестом»,
+    разговорный год «двадцать двадцать шестом». (значение, позиция после, наращение) или None."""
+    alone = _ru_ordinal(tokens[start])
+    if alone is not None and (parsed is None or not parsed[2]):
+        return alone[0], start + 1, alone[1]
+    if parsed is None or not parsed[2]:
+        return None
+    value, end, _ = parsed
+    if end >= len(tokens):
+        return None
+    tail = _ru_ordinal(tokens[end])
+    if tail is not None and _joins(value, tail[0]):
+        return value + tail[0], end + 1, tail[1]
+    # «в двадцать двадцать шестом году» → 2026: век и год двумя числами.
+    if value in (19, 20):
+        inner = _parse_number(tokens, end, "ru")
+        inner_end = inner[1] if inner is not None and inner[2] else end
+        inner_value = inner[0] if inner is not None and inner[2] else 0
+        last = _ru_ordinal(tokens[inner_end]) if inner_end < len(tokens) else None
+        if last is not None and (inner_value == 0 or _joins(inner_value, last[0])):
+            year = inner_value + last[0]
+            after = tokens[inner_end + 1] if inner_end + 1 < len(tokens) else ""
+            if year < 100 and re.match(r"^год", after, re.I):
+                return value * 100 + year, inner_end + 1, last[1]
+    return None
 
 
 def apply_numbers(text: str, language: str = "ru") -> str:
@@ -426,6 +499,18 @@ def apply_numbers(text: str, language: str = "ru") -> str:
     i = 0
     while i < len(tokens):
         parsed = _parse_number(tokens, i, lang)
+        if lang == "ru":
+            ordinal_end = _ordinal_number(tokens, i, parsed)
+            if ordinal_end is not None:
+                value, end, suffix = ordinal_end
+                following = tokens[end] if end < len(tokens) else ""
+                bare = bool(following) and bool(_RU_BARE_AFTER.match(following))
+                if value >= 10 or bare:
+                    out.append(text[cursor:spans[i][0]])
+                    out.append(str(value) if bare else f"{value}-{suffix}")
+                    cursor = spans[end - 1][1]
+                i = end
+                continue
         if parsed is None or not parsed[2]:
             i += 1
             continue

@@ -9,6 +9,10 @@
 """
 from __future__ import annotations
 
+import re
+from functools import lru_cache
+from pathlib import Path
+
 # Служебные имена кода и общие слова из программистского английского: их
 # диктуют как обычную речь, сомнением они быть не должны.
 CODE_COMMON = frozenset(
@@ -146,6 +150,45 @@ ALL_COMMON = NATURAL | CODE_COMMON
 def is_natural_word(word: str) -> bool:
     """Слово естественного языка (EN или RU) — по форме целиком."""
     return word.casefold() in NATURAL
+
+
+_ENGLISH_WORDS = Path("/usr/share/dict/words")
+_LOWER_LATIN = re.compile(r"[a-z]+")
+
+
+@lru_cache(maxsize=1)
+def _english_words() -> frozenset[str]:
+    try:
+        return frozenset(_ENGLISH_WORDS.read_text(encoding="utf-8", errors="ignore").lower().split())
+    except OSError:
+        return frozenset()
+
+
+def is_plain_english(word: str) -> bool:
+    """Обычное английское слово, записанное строчными: `row`, `frame`, `slides`.
+
+    Встроенный список выше маленький, поэтому сверяем со словарём, который есть в любой macOS
+    (`/usr/share/dict/words`, 236 тыс. слов); нет файла — проверки нет. Множественное число
+    и формы глагола сводятся к основе (`_stems`). Заглавная, цифры и подчёркивание — уже не обычное слово:
+    `React`, `S3`, `load_vad` сюда не попадают. Распознавание на таких словах не ошибается,
+    а место в подсказке модели (hotwords) они занимают.
+    """
+    if not _LOWER_LATIN.fullmatch(word):
+        return False
+    words = _english_words()
+    return any(stem in words for stem in _stems(word))
+
+
+# В словаре macOS только основы: «failed», «cities», «launches» сводим к «fail», «city», «launch».
+_SUFFIXES = (("ies", "y"), ("es", ""), ("s", ""), ("ied", "y"), ("ed", ""), ("ed", "e"), ("ing", ""), ("ing", "e"))
+
+
+def _stems(word: str) -> list[str]:
+    stems = [word]
+    for suffix, tail in _SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            stems.append(word[: -len(suffix)] + tail)
+    return stems
 
 
 def is_common(word: str) -> bool:

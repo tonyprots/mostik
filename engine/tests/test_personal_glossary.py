@@ -70,3 +70,15 @@ def test_import_from_transcriber_on_first_run(tmp_path, monkeypatch):
     store.forget("Threads")
     again = PersonalGlossary(tmp_path / "home" / "glossary.yaml", import_transcriber=True)
     assert "Threads" not in {item["canonical"] for item in again.list()}
+
+
+def test_remember_cleans_text_fragments(tmp_path):
+    # Принятое сомнение приходит фрагментом текста: «там три,» → «3,» в словарь не идёт.
+    store = PersonalGlossary(tmp_path / "glossary.yaml", import_transcriber=False)
+    assert store.remember_many([("там три,", "3,")]) == 0
+    assert store.remember_many([("раз два три четыре пять шесть", "Notion")]) == 0
+    assert store.remember_many([("эскейп.", "escape,"), ("ноушн", "Notion")]) == 2
+    assert {item["canonical"]: item["aliases"] for item in store.list()} == {
+        "escape": ["эскейп"], "Notion": ["ноушн"]}
+    assert pgm.clean_pair("", "Q4") == ("", "Q4")
+    assert pgm.clean_pair("ноде джей эс", "Node.js") == ("ноде джей эс", "Node.js")

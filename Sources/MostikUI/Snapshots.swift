@@ -27,6 +27,7 @@ public enum Snapshots {
             ("hud-transcribing", .transcribing),
             ("hud-done", .done(summary: L("Вставлено", "Inserted"), doubts: 2, agent: true)),
             ("hud-copied", .done(summary: L("Скопировано", "Copied"), doubts: 0, agent: false)),
+            ("hud-done-spelling", .done(summary: L("Вставлено", "Inserted"), doubts: 0, agent: false, spelling: "d1")),
             ("hud-error", .error(L("Микрофон занят другим приложением", "Microphone is busy"))),
             // Доставка (R2, R4, H2)
             ("hud-not-inserted", .notice(title: L("Текст не вставлен", "Text not inserted"),

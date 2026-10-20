@@ -131,7 +131,10 @@ public final class Paster {
                 return DeliveryReport(outcome: .clipboard(reason: DeliveryReason.notInserted.rawValue), check: check,
                                       before: now, after: second ?? first, sent: sent)
             }
-            if pasteboard.changeCount == ourChange { restore(snapshot) }
+            // «Неизвестно» — поле не прочитать: прежний буфер не возвращаем, диктовка остаётся для ⌘V.
+            if pasteboard.changeCount == ourChange {
+                if PasteVerifier.restoresClipboard(after: check) { restore(snapshot) } else { write(text) }
+            }
             return DeliveryReport(outcome: .inserted, check: check, before: now, after: second ?? first, sent: sent)
         }
     }

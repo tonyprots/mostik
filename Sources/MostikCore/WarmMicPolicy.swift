@@ -58,6 +58,41 @@ public enum WarmMicPolicy {
         case restart
     }
 
+    /// Сколько ждать тишины от Core Audio, прежде чем трогать движок по внешнему сигналу.
+    ///
+    /// Сбой 2026-10-19: Bluetooth-вывод, запись старт → отмена → старт за 400 мс. HAL пересобирал
+    /// агрегат входа, движок прислал `AVAudioEngineConfigurationChange`, и мы сразу остановили его,
+    /// пока он ещё работал, — IO-поток CoreAudio упал по нулевому адресу (SIGSEGV в
+    /// `HALC_ProxyIOContext::IOWorkLoop`). Сигналы приходят пачкой: ждём, пока устройство затихнет.
+    public static let settleDelay: TimeInterval = 0.3
+
+    /// Отложенная перенастройка: пачка сигналов → одна перенастройка после `settleDelay` тишины.
+    /// Формат сменился хоть в одном сигнале — перезапуск нужен и после склейки.
+    public struct Settle: Equatable, Sendable {
+        /// Номер последнего сигнала: сработать должен только таймер последнего.
+        public private(set) var generation = 0
+        public private(set) var formatChanged = false
+        public private(set) var pending = false
+
+        public init() {}
+
+        /// Пришёл сигнал; вернуть номер, с которым ставить таймер.
+        public mutating func signal(formatChanged: Bool) -> Int {
+            generation += 1
+            self.formatChanged = self.formatChanged || formatChanged
+            pending = true
+            return generation
+        }
+
+        /// Таймер сработал. nil — после него были сигналы (сработает их таймер) или уже обработано;
+        /// иначе — `formatChanged` всей пачки, и ожидание сброшено.
+        public mutating func fire(_ generation: Int) -> Bool? {
+            guard pending, generation == self.generation else { return nil }
+            defer { pending = false; formatChanged = false }
+            return formatChanged
+        }
+    }
+
     public static func decide(_ s: State) -> Action {
         let deviceChanged = s.boundDevice != nil && s.currentDevice != nil && s.boundDevice != s.currentDevice
         let needsAudio = s.recording || s.warmActive

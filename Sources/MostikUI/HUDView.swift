@@ -34,8 +34,8 @@ public struct HUDView: View {
                 recording.transition(.phase)
             case .transcribing:
                 transcribing.transition(.phase)
-            case let .done(summary, doubts, agent):
-                done(summary: summary, doubts: doubts, agent: agent).transition(.phase)
+            case let .done(summary, doubts, agent, spelling):
+                done(summary: summary, doubts: doubts, agent: agent, spelling: spelling).transition(.phase)
             case let .error(message):
                 error(message).transition(.phase)
             case let .notice(title, detail):
@@ -131,7 +131,7 @@ public struct HUDView: View {
                 .fixedSize()
                 .foregroundStyle(Palette.inkSecondary)
                 .padding(.trailing, DS.Space.s)
-            ProgressBar(value: share).frame(width: 72)
+            CreepingProgress(share: share).frame(width: 72)
             Spacer(minLength: DS.Space.s)
             Button(L("Вставить сразу", "Insert now")) { model.onInsertFast() }
                 .buttonStyle(.mostik(.secondary, compact: true))
@@ -160,18 +160,21 @@ public struct HUDView: View {
     }
 
     /// Итог. С сомнениями — ссылка в историю: «Вставлено · 2 слова под вопросом ›».
-    @ViewBuilder private func done(summary: String, doubts: Int, agent: Bool) -> some View {
+    /// Без сомнений, но с правкой словаря — «Вставлено · поправить слово ›»: та же плашка, а не карточка над ней.
+    @ViewBuilder private func done(summary: String, doubts: Int, agent: Bool, spelling: String?) -> some View {
+        let fix = doubts == 0 ? spelling : nil
         let row = HStack(spacing: 10) {
             MostikGlyph(bars: Palette.inkTertiary, caret: Palette.accent)
                 .frame(width: 18, height: 18)
             Group {
                 Text(summary).foregroundStyle(Palette.ink)
                     + Text(doubtTail(doubts)).foregroundStyle(Palette.doubtStrong)
+                    + Text(fix == nil ? "" : L(" · поправить слово", " · fix a word")).foregroundStyle(Palette.accent)
             }
             .font(TType.bodyStrong)
             .lineLimit(1)
             .minimumScaleFactor(0.85)
-            if doubts > 0 {
+            if doubts > 0 || fix != nil {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Palette.inkSecondary)
@@ -191,6 +194,14 @@ public struct HUDView: View {
             // Слова под вопросом решаются в истории (C4): принять или отклонить, агенту они не уходят.
             .help(L("Открыть запись в истории и проверить слова", "Open this dictation in History to check the words"))
             .accessibilityHint(L("Слова под вопросом можно принять или отклонить", "You can accept or dismiss the unsure words"))
+        } else if let fix {
+            Button {
+                guard !dragging, Date().timeIntervalSince(dragEndedAt) > 0.3 else { return }
+                model.glossaryLearning.onOpenSpelling(fix)
+            } label: { row }
+            .buttonStyle(.plain)
+            .help(L("Открыть запись и запомнить, как пишется слово", "Open this dictation and remember how a word is spelled"))
+            .accessibilityHint(L("Открывает запись, чтобы запомнить написание", "Opens the dictation to remember a spelling"))
         } else {
             row
         }
@@ -360,6 +371,25 @@ private struct StretchWave: View {
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
         }
         .frame(height: 22)
+    }
+}
+
+/// Полоса сверки: ползёт сама между редкими долями движка и добегает до конца по готовности
+/// (`ProgressCreep`). В снимке — настоящая доля.
+private struct CreepingProgress: View {
+    let share: Double
+    @Environment(\.mostikSnapshot) private var snapshot
+    @State private var start = Date()
+
+    var body: some View {
+        if snapshot {
+            ProgressBar(value: share)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                ProgressBar(value: ProgressCreep.shown(share: share, elapsed: context.date.timeIntervalSince(start)))
+            }
+            .accessibilityValue(Text(verbatim: "\(Int((share * 100).rounded())) %"))
+        }
     }
 }
 

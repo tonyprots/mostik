@@ -6,8 +6,8 @@ import MostikCore
 
 // MARK: - Карточка над HUD
 
-/// Над пилюлей диктовки: предложение из правок с «Запомнить / Нет» или «Запомнить написание…»
-/// после вставки с сомнениями. Окно — `Mostik/GlossaryLearningController.swift`.
+/// На месте пилюли диктовки: предложение из правок с «Запомнить / Нет». «Запомнить написание…»
+/// после вставки живёт в самой плашке итога. Окно — `Mostik/GlossaryLearningController.swift`.
 public struct LearnPromptCard: View {
     public static let size = CGSize(width: 440, height: 64)
     @ObservedObject var learning: GlossaryLearningModel
@@ -18,8 +18,6 @@ public struct LearnPromptCard: View {
         Group {
             if let prompt = learning.prompt {
                 suggestion(prompt)
-            } else if let entryID = learning.spellingChipEntry {
-                spelling(entryID)
             } else {
                 Color.clear
             }
@@ -46,25 +44,6 @@ public struct LearnPromptCard: View {
                 .buttonStyle(.mostik(.quiet, compact: true))
             Button(L("Запомнить", "Remember")) { learning.onDecide(s, true) }
                 .buttonStyle(.mostik(.primary, compact: true))
-        }
-    }
-
-    private func spelling(_ entryID: String) -> some View {
-        card {
-            Image(systemName: "character.book.closed")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Palette.accent)
-            Text(L("Слово распознано не так?", "Misheard a word?"))
-                .font(TType.body)
-                .foregroundStyle(Palette.ink)
-            Spacer(minLength: DS.Space.xs)
-            Button(L("Запомнить написание…", "Remember spelling…")) { learning.onOpenSpelling(entryID) }
-                .buttonStyle(.mostik(.secondary, compact: true))
-            Button { learning.onDismissPrompt() } label: {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
-            }
-            .buttonStyle(.mostik(.quiet, compact: true))
-            .iconHelp(L("Скрыть", "Hide"))
         }
     }
 

@@ -6,7 +6,7 @@ func runEditLearningTests() {
     // Одна всплывашка: с сомнениями ведёт плашка, карточка «Слово распознано не так?» молчит.
     check(!LearnPromptPolicy.showsSpellingChip(doubts: 2, corrections: 1), "сомнения — только плашка")
     check(!LearnPromptPolicy.showsSpellingChip(doubts: 0, corrections: 0), "нечего запоминать")
-    check(LearnPromptPolicy.showsSpellingChip(doubts: 0, corrections: 1), "правки словаря без сомнений — карточка")
+    check(LearnPromptPolicy.showsSpellingChip(doubts: 0, corrections: 1), "правки словаря без сомнений — «поправить слово» в плашке")
 
     // MARK: L1 — поиск вставки
     do {

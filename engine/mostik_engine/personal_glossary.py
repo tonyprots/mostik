@@ -34,6 +34,21 @@ def _curated_source() -> Path | None:
 
 CURATED_SOURCE = _curated_source()
 _LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+# Пара в словарь приходит фрагментом текста («там три,» → «3,»): знаки на краях — запись,
+# а не термин. Канон без букв — число, а не название; длиннее пяти слов — фраза, а не термин.
+_EDGE_PUNCTUATION = ".,;:!?…"
+MAX_TERM_WORDS = 5
+
+
+def clean_pair(heard: str, canonical: str) -> tuple[str, str] | None:
+    """Пара «как слышится → как пишется», пригодная для словаря, или None."""
+    heard = str(heard or "").strip().strip(_EDGE_PUNCTUATION).strip()
+    canonical = str(canonical or "").strip().strip(_EDGE_PUNCTUATION).strip()
+    if not any(char.isalpha() for char in canonical):
+        return None
+    if len(canonical.split()) > MAX_TERM_WORDS or len(heard.split()) > MAX_TERM_WORDS:
+        return None
+    return heard, canonical
 
 
 def _read(path: Path) -> Any:
@@ -205,15 +220,15 @@ class PersonalGlossary:
         """Несколько пар «как слышится → как пишется» одной записью файла (импорт, L6).
 
         Пустой `heard` — термин без замены: он идёт в подсказку модели. Возвращает,
-        сколько пар записано (пустые каноны пропускаются)."""
+        сколько пар записано (пары, не прошедшие `clean_pair`, пропускаются)."""
         written = 0
         with self._lock:
             doc = self._load()
             for heard, canonical in pairs:
-                heard, canonical = str(heard or "").strip(), str(canonical or "").strip()
-                if not canonical:
+                pair = clean_pair(heard, canonical)
+                if pair is None:
                     continue
-                self._remember(doc, heard, canonical, language)
+                self._remember(doc, *pair, language)
                 written += 1
             if written:
                 self._save(doc)

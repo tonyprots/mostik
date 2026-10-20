@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, replace
 from typing import Iterable
 
 from . import paths  # noqa: F401 — кладёт transcriber в sys.path
+from .speech_rules import is_number_word
+from .wordlists import is_natural_word, is_plain_english
 
 from audio_transcription import phonetic  # noqa: E402
 from audio_transcription.glossary import (  # noqa: E402
@@ -23,6 +25,7 @@ from audio_transcription.glossary import (  # noqa: E402
 )
 from audio_transcription.models import Correction, Hypothesis, ReviewItem, Segment  # noqa: E402
 from audio_transcription.reconcile import (  # noqa: E402
+    _equivalent,
     find_review_items,
     normalize_text,
     without_fillers,
@@ -37,10 +40,19 @@ EXCLUDED_KINDS = frozenset(
 )
 SOURCE_FACTOR = {"project": 3, "personal": 2}
 _LATIN_OR_DIGIT = re.compile(r"[A-Za-z0-9]")
+_DIGIT = re.compile(r"\d")
+_LATIN_LETTER_ANY = re.compile(r"[A-Za-z]")
+_HAS_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+# Термин проекта — обычное английское слово (`wordlists.is_plain_english`: «video», «slides»):
+# русское «видео» звучит так же, но это не опечатка термина, а перевод. «launchd» — термин.
 _SENTENCE_END = ".!?…"
 _MAX_NGRAM = 3
 MIN_ALIAS_LETTERS = 3
 MAX_SPAN_WORDS = 5
+# Знаки на краях фрагмента — запись, а не сказанное: «два, три,» в подсказке — это «два, три».
+_EDGE_PUNCTUATION = ".,;:!?…»«\"'()[]—–-"
+# «Раз, два, три» — счёт: «раз» здесь значит «один», и Whisper пишет «1, 2, 3».
+_COUNTING_ONE = re.compile(r"(?<!\w)раз(?=\s+(?:два|2)(?!\w))")
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,10 @@ class TermHit:
     canonical: str
     source: str
     score: float
+    # Кусок текста (до трёх слов), на котором совпал термин; пусто — место не известно.
+    piece: str = ""
+    # Термин проекта — обычное английское слово (`is_plain_english`).
+    plain: bool = False
 
 
 def _letters(text: str) -> int:
@@ -88,7 +104,7 @@ class TermIndex:
         personal: Iterable[GlossaryEntry] = (),
     ) -> None:
         self.exact: dict[str, TermHit] = {}
-        self._buckets: dict[str, list[tuple[str, str, str, str]]] = {}
+        self._buckets: dict[str, list[tuple[str, str, str, str, bool]]] = {}
         for term in project_terms:
             self._add(term, term, "project")
         for entry in personal:
@@ -106,13 +122,14 @@ class TermIndex:
         if not key:
             return
         current = self.exact.get(key)
+        plain = source == "project" and is_plain_english(spelling)
         if current is None or SOURCE_FACTOR[source] > SOURCE_FACTOR[current.source]:
-            self.exact[key] = TermHit(canonical, source, 1.0)
+            self.exact[key] = TermHit(canonical, source, 1.0, plain=plain)
         if _letters(spelling) < MIN_PHONETIC_LETTERS:
             return
         for code in phonetic.phonetic_codes(spelling):
             self._buckets.setdefault(code[:1], []).append(
-                (code, phonetic._skeleton(code), canonical, source)
+                (code, phonetic._skeleton(code), canonical, source, plain)
             )
 
     def match(self, text: str, threshold: float = TERM_SIMILARITY) -> TermHit | None:
@@ -123,6 +140,8 @@ class TermIndex:
             for start in range(len(words) - size + 1):
                 piece = " ".join(words[start : start + size])
                 hit = self._match_piece(piece, threshold)
+                if hit:
+                    hit = replace(hit, piece=piece)
                 if hit and (
                     best is None
                     or (SOURCE_FACTOR[hit.source], hit.score)
@@ -138,9 +157,12 @@ class TermIndex:
         if _letters(piece) < MIN_PHONETIC_LETTERS - 1:
             return None
         best: TermHit | None = None
+        cyrillic = bool(_HAS_CYRILLIC.search(piece))
         for code in phonetic.phonetic_codes(piece):
             skeleton = phonetic._skeleton(code)
-            for other, other_skeleton, canonical, source in self._buckets.get(code[:1], ()):
+            for other, other_skeleton, canonical, source, plain in self._buckets.get(code[:1], ()):
+                if cyrillic and plain:
+                    continue
                 longest = max(len(code), len(other))
                 if abs(len(code) - len(other)) > (1 - threshold) * longest:
                     continue
@@ -151,7 +173,7 @@ class TermIndex:
                     best is None
                     or (SOURCE_FACTOR[source], score) > (SOURCE_FACTOR[best.source], best.score)
                 ):
-                    best = TermHit(canonical, source, score)
+                    best = TermHit(canonical, source, score, plain=plain)
         return best
 
 
@@ -202,17 +224,105 @@ def _same_time(left: str, right: str) -> bool:
     return bool(strip(left)) and strip(left) == strip(right)
 
 
+def _same_numbers(left: str, right: str) -> bool:
+    """«Раз, два, три» и «1, 2, 3» — один и тот же счёт, записанный по-разному."""
+    def counted(text: str) -> str:
+        return _COUNTING_ONE.sub("один", normalize_text(text))
+
+    return bool(_LATIN_OR_DIGIT.search(left + right)) and _equivalent(counted(left), counted(right))
+
+
+# Сколько «услышано» и «вариант» должны быть похожи по звучанию, чтобы спор был о слове, а не
+# о разных кусках речи. Замер на диктовке 2026-10-20: сбой проверяющей и сдвиг пары — ниже 0,5
+# (сбой проверяющей: «Вначале я понимаю, ты» → «Цель отменяли»; сдвиг: «Нормально» → «Пригородного поезда нормальным»),
+# настоящие места — от 0,5 («маше» → «Саше», «клон» → Claude) и выше («Fix by Glocy» 0,73).
+# Сдвиг пары около 0,5 («минут. Дальше» → «на ленту отдыху. Про Dashboard») отсекает
+# второе условие: длина сторон расходится больше чем на `LATIN_EXTRA_WORDS` слова.
+SOUND_SIMILARITY = 0.5
+def sounds_alike(left: str, right: str) -> float:
+    """Фонетическое сходство двух кусков (лучшее по вариантам чтения), 0…1."""
+    best = 0.0
+    for one in phonetic.phonetic_codes(normalize_text(left)):
+        for other in phonetic.phonetic_codes(normalize_text(right)):
+            score = min(phonetic._ratio(phonetic._skeleton(one), phonetic._skeleton(other)),
+                        phonetic._ratio(one, other))
+            best = max(best, score)
+    return best
+
+
+def _without_numbers(text: str) -> str:
+    """Фраза без чисел цифрами и словами: «Восемнадцатый нормально» → «нормально», «до 4-5» → «до»."""
+    words = []
+    for word in text.split():
+        bare = word.strip(_EDGE_PUNCTUATION).lower()
+        if not bare or _DIGIT.search(bare) or bare == "раз" or is_number_word(bare):
+            continue
+        words.append(word)
+    return " ".join(words)
+
+
+def _trim_words(text: str) -> str:
+    """Те же слова, что вернёт `_without_numbers`, только без вычеркивания чисел."""
+    return " ".join(word for word in text.split() if word.strip(_EDGE_PUNCTUATION))
+
+
+def _latin_words(text: str) -> int:
+    return sum(1 for word in text.split() if _LATIN_LETTER_ANY.search(word))
+
+
+def _plain_phrase(piece: str) -> bool:
+    """Кусок из одних обычных слов языка: «у тебя» — речь, а не искажённый термин."""
+    words = [word for word in normalize_text(piece).split() if word]
+    return bool(words) and all(is_natural_word(word) for word in words)
+
+
+def _trim(text: str) -> str:
+    return text.strip().strip(_EDGE_PUNCTUATION).strip()
+
+
 def classify(item: ReviewItem, terms: TermIndex) -> tuple[str, TermHit | None] | None:
-    """Вид сомнения или None, если расхождение не на термине."""
+    """Вид сомнения или None, если расхождение не на термине.
+
+    У найденного термина `piece` — кусок основной, который он заменяет; если термин нашёлся
+    только у проверяющей, места в основной нет и `piece` пуст.
+    """
     if item.kind in EXCLUDED_KINDS:
         return None
+    if _same_numbers(item.primary_span, item.verifier_span):
+        return None
+    longest = max(len(item.primary_span.split()), len(item.verifier_span.split()))
     primary_hit = verifier_hit = None
     if len(terms):
         primary_hit = terms.match(item.primary_span)
         verifier_hit = terms.match(item.verifier_span)
+    if primary_hit is not None and normalize_text(primary_hit.piece) == normalize_text(primary_hit.canonical):
+        # Основная уже написала термин словом целиком («…CRM. Короче, CRM API…» → «Короче»):
+        # спор в этом месте не о нём.
+        primary_hit = None
     hits = [found for found in (primary_hit, verifier_hit) if found is not None]
     if hits:
         hit = max(hits, key=lambda found: (SOURCE_FACTOR[found.source], found.score))
+        if primary_hit is not None and hit.canonical == primary_hit.canonical:
+            # Тот же термин нашёлся и у основной: у неё известен кусок, заменяем только его.
+            hit = primary_hit
+        if (
+            hit.source == "project"
+            and _HAS_CYRILLIC.search(hit.piece if hit is primary_hit else item.primary_span)
+            and not _HAS_CYRILLIC.search(hit.canonical)
+            and (hit.plain or not _LATIN_OR_DIGIT.search(item.verifier_span))
+        ):
+            # Основная написала русское слово, термин проекта — латиницей. Обе модели слышали русское
+            # («истории» → History) или термин — обычное английское слово («видео» → video):
+            # это не ошибка распознавания, а перевод.
+            return None
+        if hit is not primary_hit:
+            # Термин нашёлся только у проверяющей: заменять пришлось бы весь фрагмент основной.
+            # Это честно, только если фрагмент не длиннее самого термина на слово:
+            # «не вар четыре» → WorkSpace съедает «четыре», «истории про отпуск» → History — полфразы.
+            primary_words = len(item.primary_span.split())
+            if primary_words > len(hit.canonical.split()) + 1:
+                return None
+            hit = replace(hit, piece="")
         # Основная уже написала канон, а у проверяющей ни термина, ни латиницы:
         # права основная («Астра» против «острое»), спрашивать нечего.
         if (
@@ -222,7 +332,6 @@ def classify(item: ReviewItem, terms: TermIndex) -> tuple[str, TermHit | None] |
         ):
             return None
         return hit.source, hit
-    longest = max(len(item.primary_span.split()), len(item.verifier_span.split()))
     if longest > MAX_SPAN_WORDS:
         # Длинный фрагмент без термина — срыв одной из моделей (Whisper
         # дописывает фразу в паузу), а не спорное название.
@@ -262,17 +371,56 @@ def select_doubts(
         kind, hit = verdict
         # Канон словаря — только если основная написала не его: иначе спорить
         # не о чем, а предлагать стоит написание проверяющей.
+        heard = item.primary_span.strip()
         suggestion = item.verifier_span.strip()
-        if hit is not None and normalize_text(hit.canonical) != normalize_text(item.primary_span):
-            suggestion = hit.canonical
-        if not suggestion or normalize_text(suggestion) == normalize_text(item.primary_span):
+        if hit is not None:
+            # Заменяем только кусок с термином, а не весь фрагмент расхождения:
+            # «два, три» → канон, а не «Раз, два, … десять» → канон.
+            piece = _trim(hit.piece)
+            if piece and normalize_text(hit.canonical) != normalize_text(piece):
+                heard, suggestion = piece, hit.canonical
+            elif normalize_text(hit.canonical) != normalize_text(heard):
+                suggestion = hit.canonical
+        if not suggestion or normalize_text(suggestion) == normalize_text(heard):
             continue
-        key = (normalize_text(item.primary_span), normalize_text(suggestion))
+        piece_hit = hit is not None and bool(_trim(hit.piece)) and heard == _trim(hit.piece)
+        if piece_hit:
+            # Совпадение со словарём по звучанию на куске из обычных слов («у тебя» ≈ «ютубе» → YouTube):
+            # обе модели слышали речь. Точный алиас (score 1) сюда не попадает.
+            if hit.score < 1.0 and _plain_phrase(heard):
+                continue
+        else:
+            # Кроме термина на куске основной (его звучание уже сверил словарь), спор должен быть
+            # о похожем на слух: иначе в пару попали разные куски речи или сбой проверяющей.
+            # Имя у проверяющей — замена слова словом: лишние слова вокруг значат, что пара сдвинута
+            # («заказчика нормально.» → «заказчики нормальные. Про Свету.»). Английской фразе — запас.
+            extra = 1 if kind == "proper" else LATIN_EXTRA_WORDS
+            if abs(len(heard.split()) - len(suggestion.split())) > extra:
+                continue
+            if _DIGIT.search(heard + suggestion):
+                # Цифры против слов — не вопрос пользователю: как писать число, решает правило
+                # «числа цифрами» (`speech_rules`), а не словарь. Цифры без числа напротив
+                # («Ну Наслаждей.» → «на слайде 7») сверяются по остальным словам.
+                heard_rest, suggestion_rest = _without_numbers(heard), _without_numbers(suggestion)
+                # Число с обеих сторон («Восемнадцатый нормально» → «18 нормальный») — спор о числе.
+                both_numbers = heard_rest != _trim_words(heard) and suggestion_rest != _trim_words(suggestion)
+                if not heard_rest or not suggestion_rest or both_numbers:
+                    continue
+                similarity = sounds_alike(heard_rest, suggestion_rest)
+            else:
+                similarity = sounds_alike(heard, suggestion)
+            if similarity < SOUND_SIMILARITY:
+                continue
+            # Латиница основной против кириллицы проверяющей («Cloud Storage» → «клауд-сторадж»,
+            # «CRM» → «ЦРМ»): термин латиницей на транслит не меняем, как и в `take_verifier_latin`.
+            if _latin_words(heard) > _latin_words(suggestion) and _HAS_CYRILLIC.search(suggestion):
+                continue
+        key = (normalize_text(heard), normalize_text(suggestion))
         if key in seen or key in rejected:
             continue
         seen.add(key)
         doubt = Doubt(
-            heard=item.primary_span.strip(),
+            heard=heard,
             suggestion=suggestion,
             context=item.readable_text,
             kind=kind,

@@ -68,13 +68,15 @@ public final class Recorder: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var firstBufferPending = false
     private var silence = SilentInputWatch()
+    /// Внешние сигналы (смена входа, устройств, конфигурации движка) — пачкой, после тишины (`WarmMicPolicy.Settle`).
+    private var settle = WarmMicPolicy.Settle()
 
     public init() {
         observe(engine)
         // Смена входа по умолчанию (сняли AirPods): остановленному движку
         // `AVAudioEngineConfigurationChange` не приходит — слушаем Core Audio.
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.queue.async { self?.reconfigure() }
+            self?.queue.async { self?.settleThenReconfigure() }
         }
         var address = Self.defaultInputAddress
         if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listener) == noErr {
@@ -82,7 +84,7 @@ public final class Recorder: @unchecked Sendable {
         }
         // Выбранный микрофон подключили или вынули: захват переходит на него или на системный вход.
         let devices: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.queue.async { self?.reconfigure() }
+            self?.queue.async { self?.settleThenReconfigure() }
         }
         var list = Self.devicesAddress
         if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &list, queue, devices) == noErr {
@@ -116,7 +118,7 @@ public final class Recorder: @unchecked Sendable {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-            self?.queue.async { self?.reconfigure(formatChanged: true) }
+            self?.queue.async { self?.settleThenReconfigure(formatChanged: true) }
         }
     }
 
@@ -268,6 +270,16 @@ public final class Recorder: @unchecked Sendable {
         engine.stop()
         engineRunning = false
         converterLock.lock(); converter = nil; converterLock.unlock()
+    }
+
+    /// Сигнал Core Audio или движка: перенастройка — когда устройство затихнет на `settleDelay`.
+    /// Остановить движок посреди перестройки агрегата — уронить IO-поток CoreAudio (`WarmMicPolicy.settleDelay`).
+    private func settleThenReconfigure(formatChanged: Bool = false) {
+        let generation = settle.signal(formatChanged: formatChanged)
+        queue.asyncAfter(deadline: .now() + WarmMicPolicy.settleDelay) { [weak self] in
+            guard let self, let formatChanged = self.settle.fire(generation) else { return }
+            self.reconfigure(formatChanged: formatChanged)
+        }
     }
 
     /// Смена входа, формата, настройки или разрешения: решение — в `WarmMicPolicy`.
