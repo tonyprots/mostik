@@ -4,7 +4,7 @@
 
 # Mostik
 
-**Free, open-source dictation for Mac that gets your words right.**
+**Free, open-source dictation and meeting transcription for Mac.**
 
 Hold the right ⌥, speak, let go: the text lands at your cursor, in any app.
 Recognition runs on your Mac, Mostik learns your names and terms, transcribes your calls,
@@ -28,6 +28,21 @@ and lets you set how the text comes out in each app.
 
 ---
 
+## Quick start
+
+**Apple silicon (M1 or later), macOS 14.2+.** Dictate in Russian or English; the English model is a separate,
+optional download. No Mostik account is needed.
+
+```bash
+curl -fsSL https://tonyprots.github.io/mostik/install.sh | bash
+```
+
+On first launch, grant the requested permissions and download a speech model. Open a text field, hold the right
+⌥, speak and release it. Mostik finishes processing and inserts the text. Rechecking and optional polishing can
+take additional time.
+
+[Manual installation and permissions](#install) · [Model sizes](#requirements) · [Privacy](#privacy)
+
 ## Why Mostik
 
 Typing is slow, and voice is faster. But ordinary dictation trips on the words that matter most: a colleague's
@@ -41,12 +56,12 @@ your way. Recognition runs on the Mac: your audio never leaves it.
 
 ## Features
 
-### Dictation that gets it right
+### Dictation with a second check
 
 <img src="docs/images/en/main-dictation.png" width="880" alt="Mostik Dictation tab: a dictated prompt for Claude Code with parakeet_tdt and warm_mic highlighted, and an Unsure words card offering Dismiss or Remember for each">
 
-- **Recognised while you talk.** Mostik transcribes your speech in short windows as you go, so the text is ready the
-  moment you let go of the key.
+- **Recognised while you talk.** Mostik transcribes your speech in short windows as you go. After you release the
+  key, it finishes rechecking the transcript and, if enabled, polishing it before pasting.
 - **A second model checks the first.** Whisper Turbo, running in its own process, rechecks what the main model
   heard. Where the two disagree, the word is marked in the history: **Remember** fixes it and adds it to your
   glossary, **Dismiss** stops Mostik from suggesting that pair again.
@@ -91,7 +106,7 @@ field. ⌃⌘Z undoes the last paste, ⌃⌘R swaps in the raw transcript. Nothi
 - **Marks and a live draft** during the call, a "text only" mode that discards the audio, and a meeting folder in an
   open format: `meeting.md`, `transcript.json`, `notes.md`.
 - **Summaries that fit the meeting:** templates for a stand-up, a 1:1, a retro and a client call, plus formal minutes,
-  tasks with owners and follow-up drafts. They are made by the local model or by Claude with your consent. Nothing is
+  tasks with owners and follow-up drafts. They are made by the local model or by Claude or Codex with your consent. Nothing is
   sent or created on its own.
 - **A brief before the next call.** With a calendar connected, Mostik writes a Markdown file to `briefs/` 10 minutes
   before a meeting: what was agreed last time and who promised what. Your agent can read it through MCP.
@@ -105,7 +120,7 @@ field. ⌃⌘Z undoes the last paste, ⌃⌘R swaps in the raw transcript. Nothi
 - **A style per app.** Plain, Business, Brief or List: brief in Slack, business-like in Mail. Scenarios set the
   language, style and translation for an app or a site.
 - **Polish on your terms:** a local model (Gemma 4 E2B on MLX) that keeps text on the Mac, or Claude through your own
-  `claude -p`, only after you agree.
+  `claude -p` or Codex through `codex exec`, only after you agree.
 - **Translate** what you say into English with one shortcut.
 - **Voice commands** turn a sentence into a calendar event, a reminder or an email draft (enable in Settings).
 - **A task for your agent:** the dictation becomes a task with a goal, context and acceptance criteria.
@@ -184,7 +199,7 @@ Mostik asks only for what the features you turn on need.
 | Microphone | dictation and your side of a meeting | on first launch |
 | Accessibility | to hear the dictation key, paste text and see where to paste it | on first launch |
 | System audio recording | the other side of a meeting | on your first meeting recording |
-| Screen recording | snapshots of the call window, if you turn them on | only if you turn them on; Mostik never requests it |
+| Screen recording | snapshots of the call window | requested when you enable snapshots; not needed for dictation |
 | Calendars | meeting titles and attendees from the macOS calendars you pick | only if you choose that source |
 
 ## Privacy
