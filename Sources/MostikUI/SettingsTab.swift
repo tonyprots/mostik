@@ -204,6 +204,17 @@ struct SettingsTab: View {
             if pending {
                 cloudConsent
             } else if backend == .claude {
+                FormDivider()
+                FormRow(title: L("Через что", "Run through"), hint: cloudCLIHint) {
+                    Segmented(options: [(PolishCLI.auto, L("Сам", "Auto")), (.claude, "Claude"), (.codex, "Codex")],
+                              selection: Binding(get: { model.settings.polish.cli },
+                                                 set: { choice in
+                                                     var s = model.settings
+                                                     s.polish.cli = choice
+                                                     model.onUpdateSettings(s)
+                                                 }))
+                        .accessibilityLabel(L("Через что причёсывать: Claude или Codex", "Run polishing through Claude or Codex"))
+                }
                 cloudNotice
                 MeetingCloudOffer(model: model)
             }
@@ -323,6 +334,7 @@ struct SettingsTab: View {
                 var s = model.settings
                 s.polish.cloudConsent = false
                 s.polish.backend = .off
+                s.polish.pausedBackend = nil
                 model.onUpdateSettings(s)
             }
             .buttonStyle(.mostik(.quiet, compact: true))
@@ -358,6 +370,7 @@ struct SettingsTab: View {
                     var s = model.settings
                     s.polish.cloudConsent = true
                     s.polish.backend = .claude
+                    s.polish.pausedBackend = nil
                     model.polishConsentPending = false
                     model.onUpdateSettings(s)
                     // Согласий два (в расшифровке чужие голоса), но спрашиваем о встречах сразу, тут же.
@@ -377,6 +390,37 @@ struct SettingsTab: View {
         LedgerLine(now: now, what: L("текст диктовки уходит в Anthropic или OpenAI", "dictated text goes to Anthropic or OpenAI"))
     }
 
+    /// Что из двух программ есть на этом Mac и через что текст идёт сейчас.
+    private var cloudCLIHint: String {
+        func state(_ key: String, _ title: String) -> String {
+            switch model.polishCLIFound[key] {
+            case "ok": return title + " — " + (key == "codex" ? L("установлен", "installed") : L("вход выполнен", "signed in"))
+            case "login": return title + " — " + L("вход истёк", "signed out")
+            case "missing": return title + " — " + L("не установлен", "not installed")
+            default: return title
+            }
+        }
+        var text = state("claude", "Claude Code") + " · " + state("codex", "Codex") + "."
+        switch model.settings.polish.cli {
+        case .auto:
+            text += " " + L("«Сам» берёт Claude Code, а если его нет или вход истёк — Codex.",
+                            "Auto uses Claude Code, or Codex when Claude is missing or signed out.")
+            if let using = model.polishCLIUsing {
+                text += " " + L("Сейчас: \(using == "codex" ? "Codex" : "Claude Code").", "Now: \(using == "codex" ? "Codex" : "Claude Code").")
+            }
+        case .claude:
+            if model.polishCLIFound["claude"] == "login" {
+                text += " " + L("В Терминале: claude auth login.", "In Terminal: claude auth login.")
+            }
+        case .codex:
+            if model.polishCLIFound["codex"] == "missing" {
+                text += " " + L("Установка в Терминале: npm i -g @openai/codex, затем codex login.",
+                                "Install in Terminal: npm i -g @openai/codex, then codex login.")
+            }
+        }
+        return text
+    }
+
     private func polishUnavailable(_ backend: PolishBackend) -> Bool {
         switch backend {
         case .off: false
@@ -390,11 +434,24 @@ struct SettingsTab: View {
         case .off:
             return L("Вставляется как сказано, с правилами ниже.", "Text goes in as spoken; only the rules below apply.")
         case .claude:
+            if model.settings.polish.cli == .codex, model.polishAvailable["claude"] == false {
+                return L("Codex не найден на этом Mac — текст вставляется как сказано. Установите его или выберите Claude ниже.",
+                         "Codex isn’t on this Mac, so text goes in as spoken. Install it or pick Claude below.")
+            }
+            if model.polishReasons["claude"] == "login", model.polishCLIFound["codex"] == "ok" {
+                return L("Вход в Claude Code истёк — текст вставляется как сказано. Выберите Codex ниже или войдите: claude auth login в Терминале.",
+                         "The Claude Code sign-in expired, so text goes in as spoken. Pick Codex below, or sign in: claude auth login in Terminal.")
+            }
+            if model.polishReasons["claude"] == "login" {
+                return L("Claude Code не вошёл или вход истёк — текст вставляется как сказано. В Терминале: claude auth login, затем перезапустите Mostik.",
+                         "Claude Code isn’t signed in or the sign-in expired, so text goes in as spoken. In Terminal: claude auth login, then restart Mostik.")
+            }
             if model.polishAvailable["claude"] == false {
                 return L("Claude Code не найден на этом Mac — текст вставится как сказано. Установка в Терминале: curl -fsSL https://claude.ai/install.sh | bash, затем войти командой claude.",
                          "Claude Code isn’t on this Mac, so text goes in as spoken. Install in Terminal: curl -fsSL https://claude.ai/install.sh | bash, then sign in with claude.")
             }
-            return L("Через Claude/Codex по подписке. Текст появится через 2–3 с.", "Via Claude/Codex on your subscription. Text appears in 2–3 s.")
+            let name = model.polishCLIUsing == "codex" ? "Codex" : (model.polishCLIUsing == "claude" ? "Claude Code" : "Claude/Codex")
+            return L("Через \(name) по подписке. Текст появится через 2–3 с.", "Via \(name) on your subscription. Text appears in 2–3 s.")
         case .mlx:
             if model.polishAvailable["mlx"] == true {
                 return L("Модель на этом Mac: текст не уходит в сеть, около 2 с.", "On-device model: text stays local, about 2 s.")
@@ -410,12 +467,16 @@ struct SettingsTab: View {
         case .off:
             return what
         case .claude:
+            if model.polishReasons["claude"] == "login" {
+                return what + " " + L("claude установлен, но не вошёл: claude auth status показывает loggedIn: false. Войдите командой claude auth login.",
+                                      "claude is installed but not signed in (claude auth status shows loggedIn: false). Sign in with claude auth login.")
+            }
             if model.polishAvailable["claude"] == false {
                 return what + " " + L("Программа claude не найдена в PATH и ~/.local/bin, поэтому текст вставляется как сказано.",
                                       "The claude program wasn’t found in PATH or ~/.local/bin, so text goes in as spoken.")
             }
-            return what + " " + L("Работает через claude -p (модель haiku), а без Claude Code — через codex exec: 2–5 с после того, как отпустите клавишу. Если ответа нет за 30 с, вставится текст как сказано.",
-                                  "Runs via claude -p (haiku), or codex exec without Claude Code: 2–5 s after you release the key. If there’s no reply within 30 s, the text goes in as spoken.")
+            return what + " " + L("Работает через claude -p (модель sonnet), а без Claude Code — через codex exec: 3–6 с после того, как отпустите клавишу. Если ответа нет за 30 с, вставится текст как сказано.",
+                                  "Runs via claude -p (sonnet), or codex exec without Claude Code: 3–6 s after you release the key. If there’s no reply within 30 s, the text goes in as spoken.")
         case .mlx:
             let size = localModelRow.map { ModelCatalog.size($0.size, russian: L10n.isRussian) } ?? L("около 3,6 ГБ", "about 3.6 GB")
             if model.polishAvailable["mlx"] == true {
@@ -439,6 +500,7 @@ struct SettingsTab: View {
             return
         }
         s.polish.backend = backend
+        s.polish.pausedBackend = nil  // выбор в Настройках главнее быстрого выключателя в меню
         model.onUpdateSettings(s)
     }
 
@@ -530,8 +592,8 @@ struct SettingsTab: View {
 
     private var agentDetectionDetails: String {
         let policy = model.settings.agentPolicy
-        return L("Mostik узнаёт \(policy.agentApps.count) редакторов, \(policy.terminals.count) терминалов с запущенным \(policy.agentCLIs.sorted().prefix(3).joined(separator: ", ")) и браузеры с \(policy.browserTitleMarkers.joined(separator: ", ")) в заголовке. В окне агента текст не причёсывается, а слова под вопросом идут агенту. Исключения — ниже.",
-                 "Detected: \(policy.agentApps.count) editors, \(policy.terminals.count) terminals running \(policy.agentCLIs.sorted().prefix(3).joined(separator: ", ")), browsers with \(policy.browserTitleMarkers.joined(separator: ", ")) in the title. In an agent window text isn’t polished and unsure words go to the agent. Exceptions below.")
+        return L("Mostik узнаёт \(policy.agentApps.count) редакторов, \(policy.terminals.count) терминалов с запущенным \(policy.agentCLIs.sorted().prefix(3).joined(separator: ", ")) и браузеры с \(policy.browserTitleMarkers.joined(separator: ", ")) в заголовке. В окне агента текст причёсывается обычным стилем — без перефраза, — а слова под вопросом идут агенту. Исключения — ниже.",
+                 "Detected: \(policy.agentApps.count) editors, \(policy.terminals.count) terminals running \(policy.agentCLIs.sorted().prefix(3).joined(separator: ", ")), browsers with \(policy.browserTitleMarkers.joined(separator: ", ")) in the title. In an agent window text is polished in the plain style, without rephrasing, and unsure words go to the agent. Exceptions below.")
     }
 
     private func setOverride(_ bundle: String, _ on: Bool?) {
@@ -857,6 +919,8 @@ struct PrivacyLedger: View {
 struct KeyPicker: View {
     @Binding var selection: String
 
+    private static let capSize: CGFloat = 40
+
     private var keys: [(id: String, symbol: String, caption: String?, spoken: String)] {
         [("rightOption", "⌥", L("правый", "right"), L("правый Option", "right Option")),
          ("rightCommand", "⌘", L("правый", "right"), L("правый Command", "right Command")),
@@ -868,10 +932,10 @@ struct KeyPicker: View {
             ForEach(keys, id: \.id) { key in
                 let on = selection == key.id
                 Button { withAnimation(Motion.quick) { selection = key.id } } label: {
-                    KeyCap(symbol: key.symbol, caption: key.caption, size: 40, pressed: on)
+                    KeyCap(symbol: key.symbol, caption: key.caption, size: Self.capSize, pressed: on)
                         .overlay {
                             // Выбранная клавиша — обводка акцентом по контуру самой клавиши.
-                            RoundedRectangle(cornerRadius: 40 * 0.18, style: .continuous)
+                            RoundedRectangle(cornerRadius: Self.capSize * 0.18, style: .continuous)
                                 .strokeBorder(Palette.accent, lineWidth: 1.5)
                                 .offset(y: on ? 2 : 0)
                                 .opacity(on ? 1 : 0)
@@ -1132,7 +1196,10 @@ enum MeetingModelChoice: Hashable {
     static func hint(_ settings: MostikSettings, localInstalled: Bool) -> String {
         switch settings.meetingEffectiveBackend {
         case .off:
-            return L("Сводок и названий встреч нет.", "No meeting summaries or titles.")
+            // «Как у диктовки», а там модель выключена: сказать, почему сводок нет.
+            return settings.meetingBackend == nil
+                ? L("У диктовки модель выключена — сводок нет.", "Dictation has no model, so no summaries.")
+                : L("Сводок и названий встреч нет.", "No meeting summaries or titles.")
         case .mlx:
             return localInstalled ? L("Расшифровки не уходят с этого Mac.", "Transcripts stay on this Mac.")
                                   : L("Модель на этом Mac не скачана.", "The on-device model isn’t downloaded.")

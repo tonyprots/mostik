@@ -76,8 +76,17 @@ public struct HUDView: View {
         HStack(spacing: 0) {
             RecordingDot(paused: model.dictationPaused, toggle: model.onToggleDictationPause)
                 .padding(.trailing, 6)
-            MeterReader(model.meter) { levels in StretchWave(levels: Array(levels.suffix(24))) }
-                .padding(.trailing, DS.Space.s)
+            if model.dictationPaused {
+                // На паузе волне нечего показывать: её место занимает слово «Пауза».
+                Text(L("Пауза", "Paused"))
+                    .font(TType.callout)
+                    .foregroundStyle(Palette.inkSecondary)
+                    .fixedSize()
+                    .padding(.trailing, DS.Space.s)
+            } else {
+                MeterReader(model.meter) { levels in StretchWave(levels: Array(levels.suffix(24))) }
+                    .padding(.trailing, DS.Space.s)
+            }
             ClockReader(model.clock) { clock in
                 HStack(spacing: 0) {
                     Text(Fmt.clock(clock.elapsed))
@@ -86,9 +95,10 @@ public struct HUDView: View {
                         .foregroundStyle(Palette.ink)
                         .fixedSize()
                     if model.dictationPaused {
-                        Text(L("Пауза", "Paused"))
-                            .font(TType.callout)
-                            .foregroundStyle(Palette.inkSecondary)
+                        Spacer(minLength: DS.Space.s)
+                        // Раньше на паузе оставалось одно слово «Пауза»: ни вставить, ни отменить было нечем.
+                        HUDControls(items: HUDHint.pausedItems(holdKey: model.settings.holdKey),
+                                    actions: [model.onFinishDictation, model.onCancelDictation])
                             .padding(.leading, DS.Space.s)
                             .transition(.opacity)
                     } else if let trouble = model.micTrouble {
@@ -101,7 +111,7 @@ public struct HUDView: View {
                             .transition(.opacity)
                     } else if let items = HUDHint.items(holdKey: model.settings.holdKey, elapsed: clock.elapsed,
                                                         handsFree: model.recordingHandsFree) {
-                        HUDControls(items: items)
+                        HUDControls(items: items, actions: [model.onFinishDictation, model.onCancelDictation])
                             .padding(.leading, DS.Space.s)
                             .transition(.opacity)
                             .accessibilityElement(children: .ignore)
@@ -125,18 +135,20 @@ public struct HUDView: View {
     /// Длинная диктовка: вторая модель сверяет текст — полоса и выход «Вставить сразу» без сверки.
     private func verifying(_ share: Double) -> some View {
         HStack(spacing: 0) {
-            Text(L("Сверяю", "Checking"))
+            Text(model.verifyStage == "polish" ? L("Причёсываю", "Polishing") : L("Сверяю", "Checking"))
                 .font(TType.bodyStrong)
                 .lineLimit(1)
                 .fixedSize()
                 .foregroundStyle(Palette.inkSecondary)
                 .padding(.trailing, DS.Space.s)
-            CreepingProgress(share: share).frame(width: 72)
+            CreepingProgress(share: share).frame(width: 72).id(model.verifyStage)  // своя полоса у этапа
             Spacer(minLength: DS.Space.s)
             Button(L("Вставить сразу", "Insert now")) { model.onInsertFast() }
                 .buttonStyle(.mostik(.secondary, compact: true))
-                .help(L("Вставить текст первой модели, не дожидаясь сверки второй",
-                        "Insert the first model’s text without waiting for the second check"))
+                .help(model.verifyStage == "polish"
+                      ? L("Вставить текст без причёсывания, не дожидаясь модели", "Insert the text unpolished, without waiting for the model")
+                      : L("Вставить текст первой модели, не дожидаясь сверки второй",
+                          "Insert the first model’s text without waiting for the second check"))
         }
         .padding(.leading, 18)
         .padding(.trailing, 6)
@@ -311,6 +323,8 @@ public struct HUDView: View {
 /// на `quaternarySystemFill`, буква цветом ink. Клавиша стопа — из Настроек.
 private struct HUDControls: View {
     let items: [HUDHint.Control]
+    /// Что делает пункт по клику, по порядку пунктов; подсказка заодно и кнопка.
+    var actions: [() -> Void] = []
 
     var body: some View {
         HStack(spacing: 4) {
@@ -318,8 +332,16 @@ private struct HUDControls: View {
                 if index > 0 {
                     Text("·").foregroundStyle(Palette.inkTertiary).padding(.horizontal, 1)
                 }
-                Text(item.action).foregroundStyle(Palette.inkSecondary)
-                KeyCapsule(key: item.key)
+                Button(action: index < actions.count ? actions[index] : {}) {
+                    HStack(spacing: 4) {
+                        Text(item.action).foregroundStyle(Palette.inkSecondary)
+                        KeyCapsule(key: item.key)
+                    }
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(item.action), \(item.spokenKey)")
             }
         }
         .font(TType.caption)

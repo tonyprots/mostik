@@ -87,7 +87,11 @@ func runStorageHygieneTests() {
                 try? fm.createDirectory(at: url, withIntermediateDirectories: true)
                 fm.createFile(atPath: url.appendingPathComponent("mix.wav").path, contents: Data([1]))
             }
-            if name != "mostik-tracks-fresh" { try? fm.setAttributes([.modificationDate: old], ofItemAtPath: url.path) }
+            // Возраст папки — по самому свежему в ней (ревью 2026-11-14, п. 17): старим и файл внутри.
+            if name != "mostik-tracks-fresh" {
+                try? fm.setAttributes([.modificationDate: old], ofItemAtPath: url.appendingPathComponent("mix.wav").path)
+                try? fm.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+            }
         }
         let removed = StorageHygiene.cleanStaleTemp(in: tmp, now: Date())
         equal(removed.sorted(), ["mostik-live-1.wav", "mostik-tracks-abc"])
@@ -188,6 +192,7 @@ func runTranscriberTempHygieneTests() {
         let url = tmp.appendingPathComponent(name, isDirectory: true)
         try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         fm.createFile(atPath: url.appendingPathComponent("chunk.wav").path, contents: Data([1]))
+        try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.appendingPathComponent("chunk.wav").path)
         try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.path)
     }
     let removed = StorageHygiene.cleanStaleTemp(in: tmp, now: now)
@@ -203,6 +208,7 @@ func runTranscriberTempHygieneTests() {
         let url = engineTmp.appendingPathComponent(name, isDirectory: true)
         try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         fm.createFile(atPath: url.appendingPathComponent("fluid.json").path, contents: Data([1]))
+        try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.appendingPathComponent("fluid.json").path)
         try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.path)
     }
     equal(StorageHygiene.cleanStaleTemp(in: engineTmp, now: now).sorted(), ["mostik-voices-old", "mostik-wispr-old"])

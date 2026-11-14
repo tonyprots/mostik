@@ -38,6 +38,7 @@ final class MeetingFolderController {
     // Предложение записать (W14).
     private var call = CallSuggestion()
     private var callTimer: Timer?
+    private var telemostWatch: Task<Void, Never>?
     // Календарь (M13, W2).
     private let calendar = CalendarSource.shared
     private var calendarTimer: Timer?
@@ -61,6 +62,7 @@ final class MeetingFolderController {
         self.engine = engine
         self.hookStore = hookStore
         extras.prep = Self.loadPrep(prepURL)
+        extras.telemostSummaryHabit = UserDefaults.standard.bool(forKey: Self.telemostHabitKey)
         wireIntents()
         model.$meetings
             .receive(on: DispatchQueue.main)
@@ -346,6 +348,8 @@ final class MeetingFolderController {
         call.appChanged(app, at: Date().timeIntervalSince1970)
         callTimer?.invalidate()
         callTimer = nil
+        telemostWatch?.cancel()
+        telemostWatch = nil
         if app == nil || model.meetingSuggestion != app {
             model.meetingSuggestion = nil
             if case .callSuggestion? = extras.prompt { extras.prompt = nil }
@@ -360,6 +364,53 @@ final class MeetingFolderController {
         // Автостарта нет (решение автора): звонок только предлагают записать, начинает человек.
         guard let app = call.suggestion(at: Date().timeIntervalSince1970, recording: recorder != nil,
                                         enabled: model.settings.meetingSuggest) else { return }
+        guard Self.telemostNames.contains(app) else { showCallSuggestion(app); return }
+        watchTelemost(app)
+    }
+
+    /// Телемост: следим за кнопкой конспекта, пока звонок идёт без записи (`TelemostSummary.Gate`).
+    /// Конспект идёт — не предлагаем; включился после предложения — убираем его.
+    private func watchTelemost(_ app: String) {
+        telemostWatch?.cancel()
+        telemostWatch = Task { [weak self] in
+            var gate = TelemostSummary.Gate()
+            var shown = false
+            // Не дольше десяти минут: дальше предложение либо принято, либо скрыто.
+            for _ in 0..<Int(600 / TelemostSummary.Gate.interval) {
+                let summary = await Task.detached(priority: .utility) { TelemostSummaryProbe.isOn() }.value
+                guard let self, !Task.isCancelled else { return }
+                let now = Date().timeIntervalSince1970
+                guard self.call.suggestion(at: now, recording: self.recorder != nil,
+                                           enabled: self.model.settings.meetingSuggest) == app else { return }
+                if summary == true {
+                    self.setTelemostHabit(true)
+                    AppLog.shared.event("meeting", shown ? "suggestion withdrawn: Telemost summary turned on"
+                                                         : "suggestion skipped: Telemost summary is on")
+                    if shown { self.dismissCall() }
+                    return
+                }
+                if !shown, gate.feed(summary, at: now) == .show {
+                    if summary == false { self.setTelemostHabit(false) }
+                    AppLog.shared.event("meeting", "suggestion shown: Telemost summary \(summary == nil ? "not found" : "is off")")
+                    self.showCallSuggestion(app)
+                    shown = true
+                }
+                try? await Task.sleep(nanoseconds: UInt64(TelemostSummary.Gate.interval * 1_000_000_000))
+            }
+        }
+    }
+
+    private static let telemostHabitKey = "telemost.summaryHabit"
+
+    private func setTelemostHabit(_ on: Bool) {
+        guard extras.telemostSummaryHabit != on else { return }
+        extras.telemostSummaryHabit = on
+        UserDefaults.standard.set(on, forKey: Self.telemostHabitKey)
+    }
+
+    private static let telemostNames: Set<String> = ["Телемост", "Telemost"]  // l10n-guard: имя от MeetingDetector, обе формы
+
+    private func showCallSuggestion(_ app: String) {
         model.meetingSuggestion = app
         if extras.prompt == nil { extras.prompt = .callSuggestion(app: app) }
     }

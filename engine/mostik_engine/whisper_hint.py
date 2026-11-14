@@ -56,6 +56,17 @@ def build_prompt(language: str | None, hotwords: Iterable[Any] | None, *, chars:
     return prompt or None
 
 
+def is_prompt_echo(text: str, language: str | None) -> bool:
+    """Ответ — дословно фраза-образец подсказки (без учёта регистра и знаков): эхо подсказки
+    на тишине, а не речь. Сверяется только вся фраза: её слова по отдельности — обычная речь."""
+    phrase = SAMPLE_PHRASES.get(language or "", "")
+
+    def bare(value: str) -> str:
+        return "".join(char for char in value.lower() if char.isalnum())
+
+    return bool(phrase) and bool(text.strip()) and bare(text) == bare(phrase)
+
+
 def peak_gain(peak: float, *, target_dbfs: float = TARGET_DBFS, max_gain_db: float = MAX_GAIN_DB) -> float:
     """Во сколько раз усилить окно с таким пиком; 1.0 — не трогать."""
     if peak <= SILENCE_PEAK:

@@ -145,55 +145,56 @@ public struct MostikSettings: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let fileVersion = (try? c.decodeIfPresent(Int.self, forKey: .schemaVersion)) ?? 0
         schemaVersion = max(fileVersion, Self.currentSchemaVersion)
-        language = try c.decodeIfPresent(String.self, forKey: .language) ?? d.language
-        autoLanguage = try c.decodeIfPresent(Bool.self, forKey: .autoLanguage) ?? d.autoLanguage
-        autoLanguages = try c.decodeIfPresent([String].self, forKey: .autoLanguages)
-        learnFromEdits = try c.decodeIfPresent(Bool.self, forKey: .learnFromEdits) ?? d.learnFromEdits
-        holdKey = try c.decodeIfPresent(String.self, forKey: .holdKey) ?? d.holdKey
-        toggleShortcutEnabled = try c.decodeIfPresent(Bool.self, forKey: .toggleShortcutEnabled) ?? d.toggleShortcutEnabled
-        warmMicrophone = try c.decodeIfPresent(Bool.self, forKey: .warmMicrophone) ?? d.warmMicrophone
-        micDeviceUID = try c.decodeIfPresent(String.self, forKey: .micDeviceUID) ?? d.micDeviceUID
-        micDeviceName = try c.decodeIfPresent(String.self, forKey: .micDeviceName) ?? d.micDeviceName
-        myName = try c.decodeIfPresent(String.self, forKey: .myName) ?? d.myName
-        verify = try c.decodeIfPresent(Bool.self, forKey: .verify) ?? d.verify
-        retentionDays = try c.decodeIfPresent(Int.self, forKey: .retentionDays) ?? d.retentionDays
-        keepAudio = try c.decodeIfPresent(Bool.self, forKey: .keepAudio) ?? d.keepAudio
-        projectPath = try c.decodeIfPresent(String.self, forKey: .projectPath)
-        enginePython = try c.decodeIfPresent(String.self, forKey: .enginePython) ?? d.enginePython
-        meetingSuggest = try c.decodeIfPresent(Bool.self, forKey: .meetingSuggest) ?? d.meetingSuggest
-        agentPolicy = try c.decodeIfPresent(AgentAppPolicy.self, forKey: .agentPolicy) ?? d.agentPolicy
-        onboarded = try c.decodeIfPresent(Bool.self, forKey: .onboarded) ?? d.onboarded
-        launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
-        autoProject = try c.decodeIfPresent(Bool.self, forKey: .autoProject) ?? d.autoProject
-        codeTerms = try c.decodeIfPresent(Bool.self, forKey: .codeTerms) ?? d.codeTerms
-        extraSources = try c.decodeIfPresent([String].self, forKey: .extraSources) ?? d.extraSources
-        calendarEnabled = try c.decodeIfPresent(Bool.self, forKey: .calendarEnabled) ?? d.calendarEnabled
-        calendarCommand = try c.decodeIfPresent(String.self, forKey: .calendarCommand) ?? d.calendarCommand
+        // Каждое поле читается терпимо: значение не того типа — умолчание этого поля, а не сброс всего файла.
+        language = (try? c.decodeIfPresent(String.self, forKey: .language)) ?? d.language
+        autoLanguage = (try? c.decodeIfPresent(Bool.self, forKey: .autoLanguage)) ?? d.autoLanguage
+        autoLanguages = (try? c.decodeIfPresent([String].self, forKey: .autoLanguages)) ?? d.autoLanguages
+        learnFromEdits = (try? c.decodeIfPresent(Bool.self, forKey: .learnFromEdits)) ?? d.learnFromEdits
+        holdKey = (try? c.decodeIfPresent(String.self, forKey: .holdKey)) ?? d.holdKey
+        toggleShortcutEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .toggleShortcutEnabled)) ?? d.toggleShortcutEnabled
+        warmMicrophone = (try? c.decodeIfPresent(Bool.self, forKey: .warmMicrophone)) ?? d.warmMicrophone
+        micDeviceUID = (try? c.decodeIfPresent(String.self, forKey: .micDeviceUID)) ?? d.micDeviceUID
+        micDeviceName = (try? c.decodeIfPresent(String.self, forKey: .micDeviceName)) ?? d.micDeviceName
+        myName = (try? c.decodeIfPresent(String.self, forKey: .myName)) ?? d.myName
+        verify = (try? c.decodeIfPresent(Bool.self, forKey: .verify)) ?? d.verify
+        retentionDays = (try? c.decodeIfPresent(Int.self, forKey: .retentionDays)) ?? d.retentionDays
+        keepAudio = (try? c.decodeIfPresent(Bool.self, forKey: .keepAudio)) ?? d.keepAudio
+        projectPath = (try? c.decodeIfPresent(String.self, forKey: .projectPath)) ?? d.projectPath
+        enginePython = (try? c.decodeIfPresent(String.self, forKey: .enginePython)) ?? d.enginePython
+        meetingSuggest = (try? c.decodeIfPresent(Bool.self, forKey: .meetingSuggest)) ?? d.meetingSuggest
+        agentPolicy = (try? c.decodeIfPresent(AgentAppPolicy.self, forKey: .agentPolicy)) ?? d.agentPolicy
+        onboarded = (try? c.decodeIfPresent(Bool.self, forKey: .onboarded)) ?? d.onboarded
+        launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
+        autoProject = (try? c.decodeIfPresent(Bool.self, forKey: .autoProject)) ?? d.autoProject
+        codeTerms = (try? c.decodeIfPresent(Bool.self, forKey: .codeTerms)) ?? d.codeTerms
+        extraSources = (try? c.decodeIfPresent([String].self, forKey: .extraSources)) ?? d.extraSources
+        calendarEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .calendarEnabled)) ?? d.calendarEnabled
+        calendarCommand = (try? c.decodeIfPresent(String.self, forKey: .calendarCommand)) ?? d.calendarCommand
         calendarAccounts = (try? c.decodeIfPresent(CalendarAccounts.self, forKey: .calendarAccounts)) ?? d.calendarAccounts
-        consentAcknowledged = try c.decodeIfPresent(Bool.self, forKey: .consentAcknowledged) ?? d.consentAcknowledged
-        handsFreeDoubleTap = try c.decodeIfPresent(Bool.self, forKey: .handsFreeDoubleTap) ?? d.handsFreeDoubleTap
+        consentAcknowledged = (try? c.decodeIfPresent(Bool.self, forKey: .consentAcknowledged)) ?? d.consentAcknowledged
+        handsFreeDoubleTap = (try? c.decodeIfPresent(Bool.self, forKey: .handsFreeDoubleTap)) ?? d.handsFreeDoubleTap
         polish = (try? c.decodeIfPresent(PolishSettings.self, forKey: .polish)) ?? d.polish
-        voiceEdit = try c.decodeIfPresent(Bool.self, forKey: .voiceEdit) ?? d.voiceEdit
-        meetingAIConsent = try c.decodeIfPresent(Bool.self, forKey: .meetingAIConsent) ?? d.meetingAIConsent
+        voiceEdit = (try? c.decodeIfPresent(Bool.self, forKey: .voiceEdit)) ?? d.voiceEdit
+        meetingAIConsent = (try? c.decodeIfPresent(Bool.self, forKey: .meetingAIConsent)) ?? d.meetingAIConsent
         meetingBackend = try? c.decodeIfPresent(PolishBackend.self, forKey: .meetingBackend)
         meetingAICloudConsent = CloudConsentLabel.accepts(
-            try c.decodeIfPresent(Bool.self, forKey: .meetingAICloudConsent) ?? d.meetingAICloudConsent,
+            (try? c.decodeIfPresent(Bool.self, forKey: .meetingAICloudConsent)) ?? d.meetingAICloudConsent,
             label: try? c.decodeIfPresent(String.self, forKey: .meetingAICloudConsentFor))
         meetingAICloudConsentFor = CloudConsentLabel.stamp(meetingAICloudConsent)
-        holdLatch = try c.decodeIfPresent(Bool.self, forKey: .holdLatch) ?? d.holdLatch
-        mouseTrigger = try c.decodeIfPresent(String.self, forKey: .mouseTrigger) ?? d.mouseTrigger
-        headsetTrigger = try c.decodeIfPresent(Bool.self, forKey: .headsetTrigger) ?? d.headsetTrigger
-        muteWhileRecording = try c.decodeIfPresent(Bool.self, forKey: .muteWhileRecording) ?? d.muteWhileRecording
+        holdLatch = (try? c.decodeIfPresent(Bool.self, forKey: .holdLatch)) ?? d.holdLatch
+        mouseTrigger = (try? c.decodeIfPresent(String.self, forKey: .mouseTrigger)) ?? d.mouseTrigger
+        headsetTrigger = (try? c.decodeIfPresent(Bool.self, forKey: .headsetTrigger)) ?? d.headsetTrigger
+        muteWhileRecording = (try? c.decodeIfPresent(Bool.self, forKey: .muteWhileRecording)) ?? d.muteWhileRecording
         meetingHook = (try? c.decodeIfPresent(MeetingHookSettings.self, forKey: .meetingHook)) ?? d.meetingHook
-        meetingAutoStop = try c.decodeIfPresent(Bool.self, forKey: .meetingAutoStop) ?? d.meetingAutoStop
-        meetingReminder = try c.decodeIfPresent(Bool.self, forKey: .meetingReminder) ?? d.meetingReminder
-        trashAudioAfterSummary = try c.decodeIfPresent(Bool.self, forKey: .trashAudioAfterSummary) ?? d.trashAudioAfterSummary
+        meetingAutoStop = (try? c.decodeIfPresent(Bool.self, forKey: .meetingAutoStop)) ?? d.meetingAutoStop
+        meetingReminder = (try? c.decodeIfPresent(Bool.self, forKey: .meetingReminder)) ?? d.meetingReminder
+        trashAudioAfterSummary = (try? c.decodeIfPresent(Bool.self, forKey: .trashAudioAfterSummary)) ?? d.trashAudioAfterSummary
         meetingNotes = (try? c.decodeIfPresent(MeetingNotesSettings.self, forKey: .meetingNotes)) ?? d.meetingNotes
         agentVoice = (try? c.decodeIfPresent(AgentVoiceSettings.self, forKey: .agentVoice)) ?? d.agentVoice
         agentContext = (try? c.decodeIfPresent(AgentContextSettings.self, forKey: .agentContext)) ?? d.agentContext
-        voiceMemoryConsent = try c.decodeIfPresent(Bool.self, forKey: .voiceMemoryConsent) ?? d.voiceMemoryConsent
+        voiceMemoryConsent = (try? c.decodeIfPresent(Bool.self, forKey: .voiceMemoryConsent)) ?? d.voiceMemoryConsent
         // Без согласия память не включается, даже если файл настроек правили руками.
-        voiceMemory = (try c.decodeIfPresent(Bool.self, forKey: .voiceMemory) ?? d.voiceMemory) && voiceMemoryConsent
+        voiceMemory = ((try? c.decodeIfPresent(Bool.self, forKey: .voiceMemory)) ?? d.voiceMemory) && voiceMemoryConsent
         meetingLive = (try? c.decodeIfPresent(MeetingLiveSettings.self, forKey: .meetingLive)) ?? d.meetingLive
         archive = (try? c.decodeIfPresent(ArchiveSettings.self, forKey: .archive)) ?? d.archive
         meetingAssist = (try? c.decodeIfPresent(MeetingAssistSettings.self, forKey: .meetingAssist)) ?? d.meetingAssist
@@ -203,7 +204,20 @@ public struct MostikSettings: Codable, Equatable, Sendable {
 
     public static func load(from url: URL) -> MostikSettings {
         guard let data = try? Data(contentsOf: url) else { return MostikSettings() }
-        return decode(data) ?? MostikSettings()
+        if let settings = decode(data) { return settings }
+        preserveUnreadable(url)
+        return MostikSettings()
+    }
+
+    /// Куда уходит копия файла настроек, который не удалось разобрать: `settings.json.bad`.
+    public static func badCopyURL(_ url: URL) -> URL { url.appendingPathExtension("bad") }
+
+    /// Файл есть, но не разбирается (обрезан, не JSON): копия рядом, чтобы запись умолчаний не стёрла
+    /// его без следа. true — копия сделана.
+    @discardableResult
+    static func preserveUnreadable(_ url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty, decode(data) == nil else { return false }
+        return (try? data.write(to: badCopyURL(url), options: .atomic)) != nil
     }
 
     /// Разбор с миграциями вперёд: сначала JSON доводится до текущей схемы, потом декодируется.
@@ -224,6 +238,8 @@ public struct MostikSettings: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var data = try encoder.encode(self)
+        // Неразобранный файл поверх не пишем без копии: `settings.json.bad` остаётся рядом.
+        Self.preserveUnreadable(url)
         // Поля, которых эта сборка не знает (записала версия новее), переносятся как есть: откат на старую
         // версию и обратно не теряет настроек. Свои поля — только из модели, даже если в файле их нет.
         if let old = try? Data(contentsOf: url),

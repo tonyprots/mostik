@@ -29,6 +29,11 @@ final class CalendarAccountsController {
         }
         apply(model.settings.calendarAccounts)
         model.onConnectCalendar = { [weak self] in self?.connect($0) }
+        model.onOpenInternetAccounts = {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension") {
+                NSWorkspace.shared.open(url)
+            }
+        }
         model.onDisconnectCalendar = { [weak self] in self?.disconnect($0) }
         model.onPickCalendars = { [weak self] in self?.pick($0) }
         model.onSaveCalendars = { [weak self] in self?.save($0, $1) }

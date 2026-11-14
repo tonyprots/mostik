@@ -47,4 +47,26 @@ public enum AppLocation {
             ? "Не получилось перенести самому. Перетащите Mostik в папку «Программы» в Finder и откройте его оттуда."
             : "Couldn’t move it automatically. Drag Mostik into the Applications folder in Finder and open it from there."
     }
+
+    /// Что делать с карантином перенесённой копии.
+    public enum QuarantineDecision: Equatable, Sendable {
+        /// Копия — тот же код, что запущен (или сверять не с чем): карантин снимаем, как раньше.
+        case clear
+        /// В «Программах» оказался другой код: карантин не трогаем и копию не запускаем.
+        case keep
+    }
+
+    /// `own` — отпечаток запущенного кода (nil — сборка без подписи), `matches` — цела ли перенесённая
+    /// копия и тот ли в ней код. Между «Перенести» и снятием карантина источник могли подменить.
+    public static func quarantine(own: Data?, matches: @autoclosure () -> Bool) -> QuarantineDecision {
+        guard own != nil else { return .clear }
+        return matches() ? .clear : .keep
+    }
+
+    /// Перенесённая копия не прошла сверку подписи.
+    public static func mismatchHint(russian: Bool) -> String {
+        russian
+            ? "Копия в папке «Программы» отличается от запущенного Mostik, поэтому она не открыта. Скачайте Mostik заново и перенесите его в «Программы» в Finder."
+            : "The copy in Applications differs from the Mostik that is running, so it wasn’t opened. Download Mostik again and move it to Applications in Finder."
+    }
 }

@@ -223,6 +223,41 @@ final class WindowManager: NSObject, NSWindowDelegate {
             }
         }
         onHUDShown?(phase)
+        scheduleHUDVisibilityCheck(generation)
+    }
+
+    /// Запись идёт (оранжевый микрофон горит), а плашки нет, хотя AppKit считает её показанной
+    /// (2026-11-09). Через долю секунды спрашиваем WindowServer, а не свойства окна: на экране ли
+    /// панель и с какой прозрачностью. Нет — пишем в журнал всё, что видно, и показываем новую панель.
+    private func scheduleHUDVisibilityCheck(_ generation: Int, retry: Bool = true) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hudGeneration == generation, !self.hudFading,
+                      let panel = self.hudPanel, self.model?.hud != .hidden else { return }
+                let server = Self.windowServerState(panel.windowNumber)
+                guard !server.onscreen || server.alpha < 0.99 else { return }
+                AppLog.shared.event("hud", "not visible after show: onscreen=\(server.onscreen) serverAlpha=\(server.alpha) "
+                    + "alpha=\(panel.alphaValue) visible=\(panel.isVisible) activeSpace=\(panel.isOnActiveSpace) "
+                    + "frame=\(panel.frame) recreated=\(retry)")
+                guard retry else { return }
+                let fresh = self.makeHUDPanel()
+                fresh.ignoresMouseEvents = panel.ignoresMouseEvents
+                fresh.setFrameOrigin(panel.frame.origin)
+                panel.orderOut(nil)
+                panel.contentView = nil
+                self.hudPanel = fresh
+                fresh.alphaValue = 1
+                fresh.orderFrontRegardless()
+                self.scheduleHUDVisibilityCheck(generation, retry: false)
+            }
+        }
+    }
+
+    private static func windowServerState(_ number: Int) -> (onscreen: Bool, alpha: Double) {
+        guard number > 0,
+              let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(number)) as? [[String: Any]])?.first
+        else { return (false, 0) }
+        return ((info[kCGWindowIsOnscreen as String] as? Bool) ?? false, (info[kCGWindowAlpha as String] as? Double) ?? 0)
     }
 
     /// Панель шире пилюли на поля под тень материала (П9-B): тень 0 8 24 не обрезается краем окна.

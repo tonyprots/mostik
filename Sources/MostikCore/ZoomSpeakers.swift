@@ -3,7 +3,7 @@ import Foundation
 /// Кто говорит в Zoom — по подписям плиток в дереве Accessibility (прототип, `docs/speaker-names-research.md`).
 ///
 /// Zoom подписывает плитку участника в `AXDescription` строкой «Имя, Computer audio, active speaker»:
-/// имя — до первой запятой, дальше — состояние звука и пометка активного говорящего. Так читают
+/// имя — до состояния звука (в самом имени бывает запятая), дальше — состояние звука и пометка активного говорящего. Так читают
 /// имена Granola и открытый meeting-notes. Строки английского интерфейса подтверждены чужим кодом;
 /// русские — догадка до снятия дерева на живом звонке (`AXTreeDump`).
 public enum ZoomSpeakers {
@@ -84,8 +84,16 @@ public enum ZoomSpeakers {
 
     public static func tile(from description: String) -> Tile? {
         let parts = description.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard parts.count >= 2, let first = parts.first, !first.isEmpty else { return nil }
-        let rest = parts.dropFirst().map { $0.lowercased() }
+        guard parts.count >= 2 else { return nil }
+        // Имя — всё до первой части, похожей на состояние звука или пометку говорящего: в имени
+        // бывает запятая («Иванов, Пётр»), и по первой запятой два таких участника сливались в одного.
+        let lowered = parts.map { $0.lowercased() }
+        let isMarker = { (part: String) in
+            audioMarkers.contains { part.hasPrefix($0) } || activeMarkers.contains { part.contains($0) }
+        }
+        guard let cut = lowered.indices.dropFirst().first(where: { isMarker(lowered[$0]) }) else { return nil }
+        let first = parts[..<cut].joined(separator: ", ")
+        let rest = Array(lowered[cut...])
         let active = rest.contains { part in activeMarkers.contains { part.contains($0) } }
         let audioParts = rest.filter { part in audioMarkers.contains { part.hasPrefix($0) } }
         guard active || !audioParts.isEmpty else { return nil }

@@ -66,6 +66,9 @@ struct MenuMeetingSection: View {
                 toggleLabel(MeetingMenu.framesTitle(on: assist.framesConsent, count: assist.framesCount))
             }
             .toggleStyle(MostikToggleStyle())
+            // Что с кадрами: без строки здесь тумблер «ничего не делал» — нет окна звонка или разрешения
+            // было видно только в главном окне (2026-10-21).
+            if assist.framesConsent { FramesStatusRow(assist: assist) }
             // Кому доступна запись — переключается посреди встречи, как в «…» у встречи в главном окне.
             if let live = model.meetings.first(where: { $0.state == .recording }) {
                 Toggle(isOn: Binding(get: { extras.sensitive.contains(live.id) },

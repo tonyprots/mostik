@@ -19,9 +19,12 @@ public enum WebCallSpeakers {
         /// `AXValue` у `AXStaticText`: видимый текст.
         public var value: String?
         public var children: [Node]
+        /// `AXURL` у `AXWebArea`: адрес страницы. nil — браузер его не отдал.
+        public var url: String?
         public init(role: String, classes: [String] = [], label: String? = nil, value: String? = nil,
-                    children: [Node] = []) {
+                    children: [Node] = [], url: String? = nil) {
             self.role = role; self.classes = classes; self.label = label; self.value = value; self.children = children
+            self.url = url
         }
 
         func has(_ name: String) -> Bool { classes.contains(name) }
@@ -50,6 +53,65 @@ public enum WebCallSpeakers {
         if title.hasPrefix("meet -") || title.hasPrefix("meet –") || title.contains("meet.google.com") { return .meet }
         if title.contains("телемост") || title.contains("telemost") { return .telemost }
         return nil
+    }
+
+    // MARK: чья это страница
+
+    /// Заголовок окна задаёт сама страница: любая вкладка с заголовком «Meet – …» во время записи
+    /// подставила бы свои «имена участников» в ленту спикеров (ревью 2026-11-14, Н9). Поэтому
+    /// в браузере сверяется ещё и адрес страницы.
+    public enum Origin: Equatable, Sendable {
+        /// Адрес страницы — сервис звонка.
+        case verified
+        /// Браузер не отдал адрес ни одной страницы: читаем, как раньше, но своё имя с неё не запоминаем.
+        case unknown
+        /// Адрес есть, и это не сервис звонка: страницу не читаем.
+        case foreign
+    }
+
+    static let meetHosts = ["meet.google.com"]
+    /// Телемост живёт на `telemost.<домен Яндекса>`.
+    static let telemostDomains = ["yandex.ru", "yandex.com", "yandex.kz", "yandex.by", "yandex.uz"]
+
+    /// `extraTelemostDomains` — свои домены Телемоста (корпоративная установка): в коде их нет,
+    /// берутся из настройки `telemost.extraDomains`.
+    public static func isCallURL(_ text: String, kind: Kind, extraTelemostDomains: [String] = []) -> Bool {
+        guard let parts = URLComponents(string: text), parts.scheme?.lowercased() == "https",
+              let host = parts.host?.lowercased() else { return false }
+        switch kind {
+        case .meet:
+            return meetHosts.contains(host)
+        case .telemost:
+            guard host.hasPrefix("telemost.") else { return false }
+            let rest = String(host.dropFirst("telemost.".count))
+            let domains = telemostDomains + extraTelemostDomains.map { $0.lowercased() }.filter { !$0.isEmpty }
+            return domains.contains { rest == $0 || rest.hasSuffix("." + $0) }
+        }
+    }
+
+    /// Дерево окна браузера без чужих страниц и вердикт. Судим по верхним веб-областям (вложенные —
+    /// фреймы самой страницы): с адресом звонка остаются, с другим адресом убираются; без адреса
+    /// остаются, только если адреса нет ни у одной.
+    public static func screened(_ root: Node, kind: Kind, extraTelemostDomains: [String] = []) -> (tree: Node, origin: Origin) {
+        let isCallURL = { (url: String, kind: Kind) in Self.isCallURL(url, kind: kind, extraTelemostDomains: extraTelemostDomains) }
+        var known = 0, calls = 0
+        func count(_ node: Node) {
+            if node.role == "AXWebArea" {
+                if let url = node.url { known += 1; if isCallURL(url, kind) { calls += 1 } }
+                return
+            }
+            node.children.forEach(count)
+        }
+        count(root)
+        guard known > 0 else { return (root, .unknown) }
+        guard calls > 0 else { return (Node(role: root.role), .foreign) }
+        func prune(_ node: Node) -> Node? {
+            if node.role == "AXWebArea" { return node.url.map { isCallURL($0, kind) } == true ? node : nil }
+            var copy = node
+            copy.children = node.children.compactMap(prune)
+            return copy
+        }
+        return (prune(root) ?? Node(role: root.role), .verified)
     }
 
     public static func snapshot(_ root: Node, kind: Kind) -> ZoomSpeakers.Snapshot {

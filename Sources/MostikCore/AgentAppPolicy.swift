@@ -44,6 +44,19 @@ public struct AgentAppPolicy: Equatable, Sendable, Codable {
         self.forcedOn = forcedOn; self.forcedOff = forcedOff
     }
 
+    /// Нет ключа или он не того типа — список из `standard`: блок настроек не сбрасывается целиком.
+    public init(from decoder: Decoder) throws {
+        let d = AgentAppPolicy.standard
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        terminals = (try? c.decodeIfPresent(Set<String>.self, forKey: .terminals)) ?? d.terminals
+        agentApps = (try? c.decodeIfPresent(Set<String>.self, forKey: .agentApps)) ?? d.agentApps
+        browsers = (try? c.decodeIfPresent(Set<String>.self, forKey: .browsers)) ?? d.browsers
+        agentCLIs = (try? c.decodeIfPresent(Set<String>.self, forKey: .agentCLIs)) ?? d.agentCLIs
+        browserTitleMarkers = (try? c.decodeIfPresent([String].self, forKey: .browserTitleMarkers)) ?? d.browserTitleMarkers
+        forcedOn = (try? c.decodeIfPresent(Set<String>.self, forKey: .forcedOn)) ?? d.forcedOn
+        forcedOff = (try? c.decodeIfPresent(Set<String>.self, forKey: .forcedOff)) ?? d.forcedOff
+    }
+
     public func isAgent(_ app: FrontApp) -> Bool {
         if forcedOff.contains(app.bundleID) { return false }
         if forcedOn.contains(app.bundleID) { return true }

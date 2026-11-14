@@ -13,7 +13,7 @@ extension Snapshots {
             let learning = GlossaryLearningModel()
             learning.prompt = suggestion
             write(stage(LearnPromptCard(learning: learning)), "hud-learn-suggestion" + suffix(dark), dir,
-                  width: 480, height: 96, dark: dark)
+                  width: 560, height: 96, dark: dark)
         }
 
         // «Словарь» → личный: колонки (L3), предложения из правок (L1), просмотр импорта (L6).
@@ -37,6 +37,12 @@ extension Snapshots {
                         .init(canonical: "Postgres", heard: L("постгрес", "post grace")), .init(canonical: "Kafka")])
             write(MainWindowView(model: model, entry: nil, source: "personal:" + L("Личный словарь", "Personal glossary")),
                   "main-glossary-learning" + suffix(dark), dir, width: 1080, height: 1020, dark: dark)
+            // «Своё…»: предложенное написание неверно, человек вводит правильное.
+            if !dark {
+                model.glossaryLearning.editingSuggestionID = model.glossaryLearning.suggestions[1].id
+                write(MainWindowView(model: model, entry: nil, source: "personal:" + L("Личный словарь", "Personal glossary")),
+                      "main-glossary-learning-custom", dir, width: 1080, height: 1020)
+            }
         }
 
         // Диктовка: форма «Запомнить написание» открыта (L2).

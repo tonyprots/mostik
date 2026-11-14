@@ -21,6 +21,8 @@ public struct HoldGesture: Equatable, Sendable {
         case escape(recording: Bool)
         /// Сработал переключатель ⌥Space.
         case toggle
+        /// Клик мышью в другом приложении: ⌘+клик — сочетание, а не диктовка.
+        case mouseDown
     }
 
     public enum Action: Equatable, Sendable { case begin, end, cancel, latch }
@@ -73,6 +75,11 @@ public struct HoldGesture: Equatable, Sendable {
             // Правый ⌥ + Space: удержание превращается в переключатель.
             phase = .ignored
             return [.cancel]
+        case (.holding(true), .mouseDown):
+            // ⌘+клик по вкладке или ссылке: запись, начатая этим удержанием, отменяется.
+            // Защёлкнутую и запись без рук клик не трогает — во время диктовки мышью пользуются.
+            phase = .ignored
+            return [.cancel]
         case (.holding, .toggle), (.latched, .toggle):
             phase = .ignored
             return []
@@ -85,6 +92,11 @@ public struct HoldGesture: Equatable, Sendable {
     /// расшифровка, нет микрофона, или нажатие остановило запись без рук).
     public mutating func recordingStarted(_ started: Bool) {
         if case .holding = phase { phase = .holding(startedRecording: started) }
+    }
+
+    /// Удержание отклонено снаружи (браузер без поля ввода): отпускание не шлёт `.end`.
+    public mutating func ignoreCurrentHold() {
+        if case .holding = phase { phase = .ignored }
     }
 
     /// Смена клавиши или перезапуск монитора.

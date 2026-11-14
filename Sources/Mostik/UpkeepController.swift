@@ -74,6 +74,7 @@ final class UpkeepController {
         wake.stop()
         warmTask?.cancel()
         engineRetryTask?.cancel()
+        engineRetryTask = nil  // иначе следующий сбой движка не запустит повтор
         muter.restore()
     }
 
@@ -112,6 +113,7 @@ final class UpkeepController {
     func warmed() {
         warm.warmed(at: ProcessInfo.processInfo.systemUptime)
         engineRetryTask?.cancel()
+        engineRetryTask = nil  // иначе следующий сбой движка не запустит повтор
         gate.succeeded("engine")
     }
 

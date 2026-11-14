@@ -14,12 +14,27 @@ public struct Doubt: Codable, Equatable, Sendable {
         self.context = context
         self.kind = kind
     }
+
+    /// Нет ключа — умолчание, как в `init`: одно неполное сомнение не должно терять весь итог диктовки.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        heard = (try? c.decodeIfPresent(String.self, forKey: .heard)) ?? ""
+        suggestion = (try? c.decodeIfPresent(String.self, forKey: .suggestion)) ?? ""
+        context = (try? c.decodeIfPresent(String.self, forKey: .context)) ?? ""
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "term"
+    }
 }
 
 public struct Correction: Codable, Equatable, Sendable {
     public var from: String
     public var to: String
     public init(from: String, to: String) { self.from = from; self.to = to }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        from = (try? c.decodeIfPresent(String.self, forKey: .from)) ?? ""
+        to = (try? c.decodeIfPresent(String.self, forKey: .to)) ?? ""
+    }
 }
 
 public struct Timings: Codable, Equatable, Sendable {
@@ -50,7 +65,7 @@ public struct Timings: Codable, Equatable, Sendable {
         let parts: [(String, Double?)] = [("tail", tailMs), ("queued", queuedMs), ("remainder", remainderMs),
                                           ("verifier_wait", verifierWaitMs), ("prepare", prepareMs),
                                           ("model_load", modelLoadMs), ("polish", polishMs > 0 ? polishMs : nil)]
-        return parts.compactMap { name, value in value.map { "\(name) \(Int($0.rounded())) ms" } }.joined(separator: " · ")
+        return parts.compactMap { name, value in value.map { "\(name) \(SafeInt.clamp($0.rounded())) ms" } }.joined(separator: " · ")
     }
 
     public init(audioS: Double = 0, tailMs: Double = 0, primaryMs: Double = 0, verifierMs: Double = 0, totalMs: Double = 0) {
@@ -151,6 +166,8 @@ public enum EngineEvent: Equatable, Sendable {
     case reply(id: Int, ok: Bool, payload: [String: JSONValue])
     case partial(session: String, text: String)
     case final(DictationResult)
+    /// Причёсанный текст после `final` со статусом `pending` (`polish.late`); `status` — как у `final`.
+    case polished(session: String, text: String, polished: Bool, status: String?)
     /// `detail` — короткое имя модели расшифровки встречи («Whisper»), иначе пусто.
     case progress(task: String, stage: String, done: Int, total: Int, detail: String = "")
     case meetingDone(MeetingDone)
@@ -186,6 +203,19 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var stringValue: String? { if case .string(let s) = self { return s }; return nil }
     public var doubleValue: Double? { if case .number(let n) = self { return n }; return nil }
     public var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
+    /// Целое из числа JSON без аварии (`SafeInt`).
+    public var intValue: Int? { doubleValue.map(SafeInt.clamp) }
+}
+
+/// `Int(Double)` падает на нефинитном числе и вне диапазона Int — а числа приходят от движка и LLM.
+/// Здесь: нефинитное — 0, слишком большое — край диапазона, остальное — как `Int(_)`, без дробной части.
+public enum SafeInt {
+    public static func clamp(_ value: Double) -> Int {
+        guard value.isFinite else { return 0 }
+        if value >= 0x1p63 { return Int.max }
+        if value < -0x1p63 { return Int.min }
+        return Int(value)
+    }
 }
 
 public enum EngineCodec {
@@ -208,7 +238,7 @@ public enum EngineCodec {
         guard let data = line.data(using: .utf8),
               let value = try? JSONDecoder().decode(JSONValue.self, from: data),
               case .object(let object) = value else { return nil }
-        let id = object["id"]?.doubleValue.map { Int($0) }
+        let id = object["id"]?.intValue
         if let event = object["event"]?.stringValue {
             switch event {
             case "partial":
@@ -220,18 +250,23 @@ public enum EngineCodec {
             case "final":
                 guard let result = try? JSONDecoder().decode(DictationResult.self, from: data) else { return nil }
                 return .final(result)
+            case "polished":
+                var status: String?
+                if case .object(let info)? = object["polish"] { status = info["status"]?.stringValue }
+                return .polished(session: object["session"]?.stringValue ?? "", text: object["text"]?.stringValue ?? "",
+                                 polished: object["polished"]?.boolValue ?? false, status: status)
             case "progress":
                 return .progress(task: object["task"]?.stringValue ?? "",
                                  stage: object["stage"]?.stringValue ?? "",
-                                 done: Int(object["done"]?.doubleValue ?? 0),
-                                 total: Int(object["total"]?.doubleValue ?? 0),
+                                 done: object["done"]?.intValue ?? 0,
+                                 total: object["total"]?.intValue ?? 0,
                                  detail: object["model"]?.stringValue ?? "")
             case "models_progress":
                 // Загрузка моделей по кнопке (П8, пункт 5): байты, задача `models:<key>`.
                 return .progress(task: ModelProgress.taskPrefix + (object["key"]?.stringValue ?? ""),
                                  stage: object["file"]?.stringValue ?? "",
-                                 done: Int(object["done"]?.doubleValue ?? 0),
-                                 total: Int(object["total"]?.doubleValue ?? 0))
+                                 done: object["done"]?.intValue ?? 0,
+                                 total: object["total"]?.intValue ?? 0)
             case "meeting_done":
                 guard let done = try? JSONDecoder().decode(MeetingDone.self, from: data) else { return nil }
                 return .meetingDone(done)

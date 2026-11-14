@@ -71,10 +71,28 @@ public enum StorageHygiene {
                 continue
             }
             let url = dir.appendingPathComponent(name)
-            let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date ?? now
-            guard now.timeIntervalSince(modified) >= age else { continue }
+            guard now.timeIntervalSince(lastModified(url, fallback: now)) >= age else { continue }
             if (try? fm.removeItem(at: url)) != nil { removed.append(name) }
         }
         return removed
+    }
+
+    /// Когда меняли в последний раз: у папки — самое свежее из неё самой и содержимого. Запись в уже
+    /// созданный файл время папки не трогает, и рабочая папка долгой расшифровки выглядела брошенной.
+    static func lastModified(_ url: URL, fallback: Date, limit: Int = 5000) -> Date {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path) else { return fallback }
+        var latest = attrs[.modificationDate] as? Date ?? fallback
+        guard attrs[.type] as? FileAttributeType == .typeDirectory,
+              let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.contentModificationDateKey]) else { return latest }
+        var seen = 0
+        for case let item as URL in walker {
+            if let date = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, date > latest {
+                latest = date
+            }
+            seen += 1
+            if seen >= limit { break }
+        }
+        return latest
     }
 }

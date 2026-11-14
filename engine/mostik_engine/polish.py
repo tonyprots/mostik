@@ -28,6 +28,7 @@ MLX-бэкенд переопределит `open_stream` и будет прог
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -57,7 +58,8 @@ DEFAULT_TIMEOUT_S = 30.0
 # Контекст P1: текст у каретки — до 256 символов с каждой стороны, выделение и буфер — до 600.
 CONTEXT_AROUND = 256
 CONTEXT_BLOCK = 600
-CLAUDE_MODEL = "haiku"
+# 2026-10-21 (Антон): sonnet — haiku пропускал ослышки; задержка выше, качество важнее.
+CLAUDE_MODEL = "sonnet"
 TERMS_LIMIT = 40
 VOCABULARY_LIMIT = 30
 
@@ -152,7 +154,18 @@ _VOCABULARY = {
 
 _STYLES = {
     "ru": {
-        "plain": ("обычный", "Сохрани слова и тон говорящего; правь только перечисленное выше."),
+        # 2026-10-21 (Антон): «обычный» — универсальный стиль, и в агентных окнах тоже. Голос не трогаем,
+        # но ослышки распознавания и термины чиним: раньше это умел только «разработчик».
+        "plain": ("обычный", "Сохрани слова, порядок и тон говорящего — не пересказывай и не улучшай стиль.\n"
+                             "- Исправь явные ошибки распознавания речи: слово, которое не подходит по смыслу, "
+                             "но звучит похоже на подходящее, замени подходящим («пол реквест» → «pull request», "
+                             "«эс-ку-эль запрос» → «SQL-запрос»). Не уверен, что это ошибка, — оставь как есть.\n"
+                             "- Названия продуктов, сервисов, технологий, команд, файлов и идентификаторов, записанные "
+                             "русскими буквами или искажённые, пиши в общепринятом написании (GitHub, Figma, pytest, "
+                             "JSON). Если к английскому названию прирастает русское слово — через дефис: "
+                             "«Docker-образ».\n"
+                             "- Русские слова на английских корнях («закоммитил», «задеплоить», «юзеры») оставляй "
+                             "русскими; русскую речь не переводи."),
         "business": ("деловой", "Нейтральный деловой тон: разговорные обороты и сленг замени нейтральными, "
                                 "вежливо и по делу. Сленг не выбрасывай, а перефразируй: «не грузись» → «не беспокойся». "
                                 "У каждого предложения исходника есть соответствие в ответе, объём — тот же."),
@@ -182,7 +195,12 @@ _STYLES = {
                                       "идентификаторы — буква в букву."),
     },
     "en": {
-        "plain": ("plain", "Keep the speaker's words and tone; fix only what is listed above."),
+        "plain": ("plain", "Keep the speaker's words, order and tone — do not paraphrase or improve the style.\n"
+                           "- Fix obvious speech recognition errors: a word that makes no sense in context but sounds "
+                           "like one that does — replace it (\"get hub\" → \"GitHub\", \"pie test\" → \"pytest\"). "
+                           "If unsure it is an error, leave it.\n"
+                           "- Write names of products, services, technologies, commands, files and identifiers in "
+                           "their usual spelling (GitHub, Figma, kubectl, JSON)."),
         "business": ("business", "Neutral business tone: replace colloquialisms and slang with neutral wording, "
                                  "polite and to the point. Never drop slang — rephrase it: \"no biggie\" → \"it is not a problem\". "
                                  "Every source sentence has a counterpart in the answer, same length."),
@@ -655,6 +673,11 @@ def resolve_self_corrections(text: str, language: str = "ru") -> str:
             return match.group(0)
         if not _same_kind(a, b, lang):
             return match.group(0)
+        # Голое «нет» между двумя словами без запятых — чаще сказуемое, чем поправка:
+        # «у меня времени нет почти». Числа и дни недели однозначны и так.
+        worded = not (re.fullmatch(_NUM + r".*", a) or _DAYS.match(a))
+        if worded and match.group("fix").strip().lower() in ("нет", "no") and "," not in match.group(0):
+            return match.group(0)
         return f"{pb or pa} {b}" if (pb or pa) else b
 
     previous = None
@@ -777,6 +800,8 @@ class MlxBackend(PolishBackend):
 CLAUDE_MISSING = ("Не найдены ни Claude Code, ни Codex. Установите один из них в Терминале "
                   "(curl -fsSL https://claude.ai/install.sh | bash или npm i -g @openai/codex), "
                   "войдите и перезапустите Mostik.")
+CLAUDE_LOGIN = ("Claude Code установлен, но вход не выполнен или истёк. В Терминале: claude auth login — "
+                "и перезапустите Mostik.")
 # Codex — запасной путь того же пункта «Claude/Codex по подписке»: усилие рассуждений низкое,
 # `minimal` новые модели OpenAI не принимают.
 CODEX_EFFORT = "low"
@@ -810,8 +835,123 @@ def is_codex(path: str) -> bool:
     return Path(path).name == "codex"
 
 
+# --- сеть: без неё не ждём таймаут ---------------------------------------------
+# 2026-11-04: без сети `claude -p` повторял запрос до таймаута 30 с — и при «отказе соединения»,
+# и при «Wi-Fi без интернета». Теперь до вызова — TCP-соединение с API (или прокси) не дольше
+# секунды; нет — сразу текст до полировки со статусом `offline`. Данные не уходят: только рукопожатие.
+OFFLINE = "нет сети — полировка через Claude/Codex недоступна"
+PROBE_TIMEOUT_S = 1.0
+PROBE_TTL_UP_S = 30.0    # сеть была — верим полминуты
+PROBE_TTL_DOWN_S = 5.0   # не было — проверяем снова уже через 5 с
+_PROBES: dict[tuple[str, int], tuple[float, bool]] = {}
+_PROBES_LOCK = threading.Lock()
+
+
+def api_endpoint(env: dict, codex: bool = False) -> tuple[str, int]:
+    """Куда на самом деле пойдёт CLI: прокси из окружения, иначе `ANTHROPIC_BASE_URL`, иначе API по умолчанию."""
+    from urllib.parse import urlsplit
+
+    keys = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+    if not codex:
+        keys += ("ANTHROPIC_BASE_URL",)
+    for key in keys:
+        value = (env.get(key) or "").strip()
+        if not value:
+            continue
+        parts = urlsplit(value if "://" in value else "http://" + value)
+        if parts.hostname:
+            try:
+                port = parts.port
+            except ValueError:
+                port = None
+            return parts.hostname, port or (443 if parts.scheme == "https" else 80)
+    return ("chatgpt.com" if codex else "api.anthropic.com"), 443
+
+
+def _connects(host: str, port: int, timeout: float) -> bool:
+    """TCP-рукопожатие в своём потоке: `getaddrinfo` без сети может висеть дольше любого таймаута сокета."""
+    import socket
+
+    result: list[bool] = []
+
+    def attempt() -> None:
+        try:
+            socket.create_connection((host, port), timeout=timeout).close()
+            result.append(True)
+        except OSError:
+            result.append(False)
+
+    worker = threading.Thread(target=attempt, name="mostik-net-probe", daemon=True)
+    worker.start()
+    worker.join(timeout + 0.5)
+    return bool(result and result[0])
+
+
+def api_reachable(env: dict, codex: bool = False, timeout: float = PROBE_TIMEOUT_S) -> bool:
+    endpoint = api_endpoint(env, codex)
+    now = time.monotonic()
+    with _PROBES_LOCK:
+        cached = _PROBES.get(endpoint)
+    if cached is not None:
+        at, up = cached
+        if now - at < (PROBE_TTL_UP_S if up else PROBE_TTL_DOWN_S):
+            return up
+    up = _connects(*endpoint, timeout)
+    with _PROBES_LOCK:
+        _PROBES[endpoint] = (time.monotonic(), up)
+    return up
+
+
 _ACTIVE: set[int] = set()
 _ACTIVE_LOCK = threading.Lock()
+
+
+class CancelToken:
+    """«Вставить сразу» во время полировки (2026-10-21): процессы вызова регистрируются здесь,
+    `cancel()` убивает их группы, а вызов кончается статусом `skipped`. Токен ставится на поток
+    вызовом `scope()` — `complete` бэкендов не меняет сигнатуру."""
+
+    _local = threading.local()
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pids: set[int] = set()
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+            pids = list(self._pids)
+        for pid in pids:
+            _kill_group(pid)
+
+    def attach(self, pid: int) -> None:
+        with self._lock:
+            self._pids.add(pid)
+            late = self.cancelled
+        if late:
+            _kill_group(pid)
+
+    def detach(self, pid: int) -> None:
+        with self._lock:
+            self._pids.discard(pid)
+
+    def scope(self):
+        token = self
+
+        class _Scope:
+            def __enter__(self_inner):
+                CancelToken._local.token = token
+                return token
+
+            def __exit__(self_inner, *exc):
+                CancelToken._local.token = None
+                return False
+        return _Scope()
+
+    @classmethod
+    def current(cls) -> "CancelToken | None":
+        return getattr(cls._local, "token", None)
 
 
 def _kill_group(pid: int) -> None:
@@ -842,6 +982,9 @@ def run_isolated(command: list[str], stdin_text: str, timeout: float, env: dict 
             raise PolishUnavailable(f"не запускается {command[0]}: {error}") from error
         with _ACTIVE_LOCK:
             _ACTIVE.add(process.pid)
+        token = CancelToken.current()
+        if token is not None:
+            token.attach(process.pid)
         try:
             out, err = process.communicate(stdin_text.encode("utf-8"), timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -856,10 +999,51 @@ def run_isolated(command: list[str], stdin_text: str, timeout: float, env: dict 
             _kill_group(process.pid)
             with _ACTIVE_LOCK:
                 _ACTIVE.discard(process.pid)
+            if token is not None:
+                token.detach(process.pid)
+    if token is not None and token.cancelled:
+        raise PolishError("пропущено: «Вставить сразу»", "skipped")
     if process.returncode != 0:
-        tail = err.decode("utf-8", "replace").strip()[-300:]
-        raise PolishError(f"код выхода {process.returncode}: {tail}", "failed")
+        raise exit_error(process.returncode, out, err)
     return out.decode("utf-8", "replace")
+
+
+# `claude -p` без входа пишет «Failed to authenticate: OAuth session expired…» в stdout и выходит с 1;
+# Codex — «Not logged in» / 401. Отдельный статус `auth` — приложение говорит «войдите», а не «сбой».
+_AUTH_MARKERS = re.compile(r"failed to authenticate|oauth|not logged in|/login|invalid api key|"
+                           r"authentication_error|401 unauthorized", re.I)
+
+
+def exit_error(code: int, out: bytes, err: bytes) -> "PolishError":
+    text = (err.decode("utf-8", "replace").strip() + "\n" + out.decode("utf-8", "replace").strip()).strip()
+    tail = text[-300:]
+    status = "auth" if _AUTH_MARKERS.search(text) else "failed"
+    return PolishError(f"код выхода {code}: {tail}", status)
+
+
+def stream_message(text: str) -> bytes:
+    """Одно сообщение пользователя для `claude -p --input-format stream-json`; EOF после него — конец сессии."""
+    line = json.dumps({"type": "user", "message": {"role": "user", "content": text}}, ensure_ascii=False)
+    return (line + "\n").encode("utf-8")
+
+
+def stream_result(out: bytes, err: bytes = b"") -> str:
+    """Текст ответа из строки `result` вывода stream-json; ошибка CLI — `auth` или `failed`, как в `exit_error`."""
+    result = None
+    for line in out.decode("utf-8", "replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event
+    if result is None:
+        raise exit_error(0, out[-2000:], err)
+    text = result.get("result")
+    if result.get("is_error") or result.get("subtype") != "success" or not isinstance(text, str):
+        detail = str(text or result.get("subtype") or "ошибка").encode("utf-8")
+        raise exit_error(0, detail, err)
+    return text
 
 
 class ClaudeCliBackend(PolishBackend):
@@ -868,18 +1052,71 @@ class ClaudeCliBackend(PolishBackend):
 
     name = "claude"
 
-    def __init__(self, executable: str | None = None, model: str = CLAUDE_MODEL) -> None:
+    # Сколько верить ответу «не вошёл»: всё это время диктовки идут без полировки сразу, без вызова.
+    LOGIN_RECHECK_S = 300.0
+
+    # Через что причёсывать: «auto» — Claude, а если его нет или в него не вошли — Codex.
+    # «claude» и «codex» — выбор пользователя в Настройках: при просроченном входе в Claude раньше
+    # нельзя было перейти на установленный Codex.
+    CLIS = ("auto", "claude", "codex")
+
+    def __init__(self, executable: str | None = None, model: str = CLAUDE_MODEL, cli: str = "auto") -> None:
         self.executable = executable
         self.model = model
+        self.cli = cli if cli in self.CLIS else "auto"
+        self._logged_out_at: float | None = None
+
+    def with_model(self, model: str) -> "ClaudeCliBackend":
+        """Тот же выбор программы и то же знание о входе, другая модель (сводки встреч)."""
+        other = ClaudeCliBackend(self.executable, model, self.cli)
+        other._logged_out_at = self._logged_out_at
+        return other
 
     def path(self) -> str | None:
-        return self.executable or find_claude() or find_codex()
+        if self.executable:
+            return self.executable
+        if self.cli == "claude":
+            return find_claude()
+        if self.cli == "codex":
+            return find_codex()
+        claude, codex = find_claude(), find_codex()
+        if claude and codex and self._logged_out_at is not None:
+            return codex  # в Claude не вошли, а Codex есть — берём его
+        return claude or codex
 
     def status(self) -> dict:
+        claude = None if self.executable else find_claude()
+        codex = None if self.executable else find_codex()
+        signed_out = False
+        if claude and self.cli != "codex":
+            signed_out = self.logged_in(claude) is False
+            self._logged_out_at = time.monotonic() if signed_out else None
+        elif self.executable and not is_codex(self.executable):
+            signed_out = self.logged_in(self.executable) is False
+            self._logged_out_at = time.monotonic() if signed_out else None
+        else:
+            self._logged_out_at = None
+        # Что есть на этом Mac — для выбора в Настройках.
+        found = {"claude": "missing" if claude is None else ("login" if signed_out else "ok"),
+                 "codex": "missing" if codex is None else "ok"}
         path = self.path()
         if path is None:
-            return {"available": False, "reason": "not_found", "message": CLAUDE_MISSING}
-        return {"available": True, "path": path, "model": "codex" if is_codex(path) else self.model}
+            return {"available": False, "reason": "not_found", "message": CLAUDE_MISSING, "cli": self.cli, "found": found}
+        if not is_codex(path) and signed_out:
+            return {"available": False, "reason": "login", "path": path, "message": CLAUDE_LOGIN,
+                    "cli": self.cli, "found": found}
+        return {"available": True, "path": path, "model": "codex" if is_codex(path) else self.model,
+                "cli": self.cli, "found": found, "using": "codex" if is_codex(path) else "claude"}
+
+    def logged_in(self, path: str) -> bool | None:
+        """`claude auth status` → `loggedIn`; None — не удалось узнать (старый CLI, таймаут): не мешаем."""
+        try:
+            done = subprocess.run([path, "auth", "status"], capture_output=True, timeout=10,
+                                  env=self.environment(), stdin=subprocess.DEVNULL)
+            value = json.loads(done.stdout.decode("utf-8", "replace") or "{}").get("loggedIn")
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, bool) else None
 
     def invocation(self, path: str, system: str, user: str) -> tuple[list[str], str]:
         """Команда и stdin. У Codex нет системного промпта отдельно — он идёт в начале сообщения."""
@@ -891,11 +1128,15 @@ class ClaudeCliBackend(PolishBackend):
             ], f"{system}\n\n{user}"
         return self.command(path, system), user
 
-    def command(self, path: str, system: str) -> list[str]:
+    def command(self, path: str, system: str, stream: bool = False) -> list[str]:
+        # `stream` — заранее поднятый процесс: в stream-json CLI ждёт сообщение сколько угодно
+        # (замер 2026-11-04: жив после 120 с), а в текстовом режиме выходит через 3 с без stdin.
+        io = (["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+              if stream else ["--output-format", "text"])
         return [
             path, "-p",
             "--model", self.model,
-            "--output-format", "text",
+            *io,
             "--system-prompt", system,
             "--tools", "",
             "--setting-sources", "",
@@ -925,11 +1166,36 @@ class ClaudeCliBackend(PolishBackend):
         path = self.path()
         if path is None:
             raise PolishUnavailable(CLAUDE_MISSING)
+        if not is_codex(path) and self._known_logged_out(path):
+            # 2026-10-21: без входа вызов то падал за 0,7 с, то висел до таймаута 30 с — не зовём вовсе.
+            raise PolishError(CLAUDE_LOGIN, "auth")
+        self.require_network(path)
         command, stdin = self.invocation(path, system, user)
-        return run_isolated(command, stdin, timeout, env=self.environment())
+        try:
+            return run_isolated(command, stdin, timeout, env=self.environment())
+        except PolishError as error:
+            if error.status == "auth":
+                self._logged_out_at = time.monotonic()
+            raise
 
-    # Шаг 1, п. 6 пакета «Плавность и быстродействие»: процесс `claude -p` поднимается на старте
-    # диктовки (запуск CLI ~1 с), а текст уходит в его stdin только на отпускании.
+    def _known_logged_out(self, path: str) -> bool:
+        if self._logged_out_at is None:
+            return False
+        if time.monotonic() - self._logged_out_at < self.LOGIN_RECHECK_S:
+            return True
+        if self.logged_in(path) is False:
+            self._logged_out_at = time.monotonic()
+            return True
+        self._logged_out_at = None
+        return False
+
+    def require_network(self, path: str) -> None:
+        if not api_reachable(self.environment(), is_codex(path)):
+            raise PolishError(OFFLINE, "offline")
+
+    # Шаг 1, п. 6 пакета «Плавность и быстродействие»: `claude -p` поднимается на старте диктовки.
+    # 2026-10-21 выключали: в текстовом режиме CLI 2.1.x без stdin за 3 с выходит. 2026-11-04 включено
+    # в stream-json — процесс ждёт; запуск CLI (2,5–5 с из 4–7 с вызова) уходит в время речи.
     prespawn = True
 
     def open_stream(self, request: PolishRequest) -> PolishStream:
@@ -941,8 +1207,10 @@ class ClaudeCliBackend(PolishBackend):
 
 class ClaudeStream(PolishStream):
     """`claude -p` заранее: системный промпт без терминов (`stream_system_for`) — в аргументах,
-    stdin открыт и пуст до `finish`. Термины, «не трогать» и словарь — в сообщении, как у MLX.
-    Процесс умер или не поднялся — обычный вызов целиком; отмена и пустой текст — процесс прочь."""
+    stdin открыт и пуст до `finish`; на отпускании — одно сообщение stream-json и EOF, ответ — строка
+    `result`. Один процесс — одна диктовка: история не копится, запрос не дорожает. Термины, «не трогать»
+    и словарь — в сообщении, как у MLX. Процесс умер или не поднялся — обычный вызов целиком; отмена
+    и пустой текст — процесс прочь. Сеть проверяется по ходу речи, на отпускании ответ уже в кэше."""
 
     # Диктовку бросили без `cancel` (приложение упало) — процесс не висит дольше этого.
     MAX_IDLE_S = 600.0
@@ -950,13 +1218,16 @@ class ClaudeStream(PolishStream):
     def __init__(self, backend: ClaudeCliBackend, request: PolishRequest, path: str) -> None:
         super().__init__(backend, request)
         self.system = stream_system_for(request)
-        self._command = backend.command(path, self.system)
+        self._path = path
+        self._command = backend.command(path, self.system, stream=True)
         self._process: subprocess.Popen | None = None
         self._cwd: tempfile.TemporaryDirectory | None = None
         self._lock = threading.Lock()
         self._closed = False
         self._spawned = threading.Event()
         threading.Thread(target=self._spawn, name="mostik-claude-prespawn", daemon=True).start()
+        threading.Thread(target=api_reachable, args=(backend.environment(),),
+                         name="mostik-net-warm", daemon=True).start()
         self._reaper = threading.Timer(self.MAX_IDLE_S, self.cancel)
         self._reaper.daemon = True
         self._reaper.start()
@@ -1013,7 +1284,10 @@ class ClaudeStream(PolishStream):
         full = text if text is not None else " ".join(self.chunks)
         request = self.request
         process, cwd = self._take()
-        backend, system = self.backend, self.system
+        backend, path = self.backend, self._path
+        # Процесс несёт системный промпт стартового запроса. Запрос с тех пор сменил язык или
+        # перевод — промпт уже не тот, и предзапущенным процессом пользоваться нельзя.
+        stale = stream_system_for(request) != self.system
         vocabulary = list(request.vocabulary) if request.style == "dev" else (
             list(request.pack.terms) if request.pack is not None else [])
         extra = notes(request.language, list(request.terms), list(request.keep), vocabulary).strip()
@@ -1023,19 +1297,31 @@ class ClaudeStream(PolishStream):
             name = "claude"
 
             def complete(self, _system: str, user: str, timeout: float) -> str:
-                if process is None or process.poll() is not None:
-                    # Не поднялся или умер, пока человек говорил: обычный вызов с полным промптом.
+                if process is None or process.poll() is not None or stale:
+                    # Не поднялся или умер, пока человек говорил, либо поднят под другой запрос
+                    # (язык определился иначе — другой промпт): обычный вызов с полным промптом.
                     return backend.complete(system_for(request), user, timeout)
+                backend.require_network(path)
+                # Предзапущенный процесс тоже под «Вставить сразу»: без этого кнопка его не обрывала.
+                token = CancelToken.current()
+                if token is not None:
+                    token.attach(process.pid)
                 try:
-                    out, err = process.communicate((user + suffix).encode("utf-8"), timeout=timeout)
+                    out, err = process.communicate(stream_message(user + suffix), timeout=timeout)
                 except subprocess.TimeoutExpired:
                     raise PolishTimeout(f"нет ответа за {timeout:.0f} с") from None
                 except (BrokenPipeError, OSError):
+                    if token is not None and token.cancelled:
+                        raise PolishError("пропущено: «Вставить сразу»", "skipped") from None
                     return backend.complete(system_for(request), user, timeout)
+                finally:
+                    if token is not None:
+                        token.detach(process.pid)
+                if token is not None and token.cancelled:
+                    raise PolishError("пропущено: «Вставить сразу»", "skipped")
                 if process.returncode != 0:
-                    tail = err.decode("utf-8", "replace").strip()[-300:]
-                    raise PolishError(f"код выхода {process.returncode}: {tail}", "failed")
-                return out.decode("utf-8", "replace")
+                    raise exit_error(process.returncode, out, err)
+                return stream_result(out, err)
 
         try:
             return polish(_Call(), replace(request, text=full), timeout=timeout)

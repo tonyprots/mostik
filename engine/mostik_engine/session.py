@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable
 from . import crash_report
 from . import paths  # noqa: F401 — кладёт transcriber в sys.path
 from .doubts import DEFAULT_LIMIT, TermIndex, analyze
+from .models import ModelMissing
 from .models import log as _log
 from .replace_rules import apply_rules
 from .seams import join_windows
@@ -34,6 +35,11 @@ PAD_S = 0.2
 # фразы может уже идти, а VAD ещё не набрал 250 мс речи.
 KEEP_SILENCE_S = 1.0
 IDLE_TAIL_S = 3.0
+# Хвост после последнего окна на `stop`: не длиннее 1,5 с, и в нём ≥3 кадров по 30 мс
+# громче 0,3 от уровня речи окна (`extend_final_window`).
+FINAL_TAIL_S = 1.5
+FINAL_TAIL_LEVEL = 0.3
+FINAL_TAIL_FRAMES = 3
 # Пачка для проверяющей: уходит, набрав 8 с, и не длиннее 24 с.
 PACK_MIN_S = 8.0
 # Длинная диктовка ждёт проверяющую до конца: на минутах речи быстрый текст одной модели
@@ -107,6 +113,62 @@ def plan_windows(
     return windows, cut
 
 
+def extend_final_window(waveform: Any, window: tuple[int, int], sr: int = SAMPLE_RATE) -> tuple[int, int]:
+    """На `stop` последнее окно дотягивается до конца звука, если в коротком хвосте что-то звучит.
+
+    VAD не видит слово короче 250 мс, и окно кончалось через 0,2 с после последней найденной
+    речи: короткое слово в конце терялось. Хвост берём, только если он не длиннее
+    `FINAL_TAIL_S`, окно с ним не длиннее обычного и в нём есть ≥90 мс звука на уровне речи
+    окна: тишину и щелчок клавиши модели не отдаём.
+    """
+    import numpy as np
+
+    start, end = window
+    rest = len(waveform) - end
+    if rest <= 0 or rest > FINAL_TAIL_S * sr or len(waveform) - start > (MAX_WINDOW_S + PAD_S) * sr:
+        return window
+    hop = sr * 30 // 1000
+
+    def levels(samples: Any) -> Any:
+        frames = len(samples) // hop
+        return np.sqrt((np.asarray(samples[: frames * hop], dtype=np.float32).reshape(frames, hop) ** 2).mean(axis=1))
+
+    speech, tail = levels(waveform[start:end]), levels(waveform[end:])
+    if not len(speech) or not len(tail):
+        return window
+    loud = int((tail > FINAL_TAIL_LEVEL * float(np.percentile(speech, 75))).sum())
+    return (start, len(waveform)) if loud >= FINAL_TAIL_FRAMES else window
+
+
+def final_tail_window(waveform: Any, after: int, speech: Any, sr: int = SAMPLE_RATE) -> tuple[int, int] | None:
+    """На `stop`: звук после последнего окна, в котором VAD речи не нашёл, — отдельным окном,
+    если в его последних `FINAL_TAIL_S` что-то звучит на уровне речи.
+
+    Быстро брошенное в конце слово («да», «нет») короче 250 мс, и клавишу отпускают сразу —
+    VAD его не видит (живой замер: слово до 0,29 с без тишины после него теряется всегда).
+    `extend_final_window` спасает его, только если окно нарезано этим же шагом и слово не дальше
+    1,5 с; здесь — остальные случаи: окно закрылось раньше или пауза перед словом длиннее.
+    `speech` — звук последнего окна речи, мерка уровня. Тишина и щелчок клавиши не проходят.
+    """
+    import numpy as np
+
+    hop = sr * 30 // 1000
+    start = max(after, len(waveform) - int(FINAL_TAIL_S * sr))
+    rest = np.asarray(waveform[start:], dtype=np.float32)
+    reference = np.asarray(speech, dtype=np.float32)
+    if len(rest) < FINAL_TAIL_FRAMES * hop or len(reference) < hop:
+        return None
+
+    def levels(samples: Any) -> Any:
+        frames = len(samples) // hop
+        return np.sqrt((samples[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
+
+    loud = np.flatnonzero(levels(rest) > FINAL_TAIL_LEVEL * float(np.percentile(levels(reference), 75)))
+    if len(loud) < FINAL_TAIL_FRAMES:
+        return None
+    return max(after, start + int(loud[0]) * hop - int(PAD_S * sr)), len(waveform)
+
+
 @dataclass
 class Window:
     index: int
@@ -146,6 +208,8 @@ class Pack:
     submitted: bool = False
     # Когда пачка ушла проверяющей (monotonic): для прогноза «успеет ли» на stop.
     submitted_at: float | None = None
+    # Язык определился с опозданием, окна распознаны заново: старая пачка в итог не идёт.
+    void: bool = False
 
     @property
     def start_s(self) -> float:
@@ -199,6 +263,8 @@ class Session:
         self._checked = 0  # длина буфера (в сэмплах) на прошлом прогоне VAD
         self.windows: list[Window] = []
         self.packs: list[Pack] = []
+        # Окна, на которых основная модель упала: их текст пуст, счёт уходит в `final.stats`.
+        self.failed_windows = 0
         self.vad_ms = 0.0
         self.cancelled = False
         self.step_queued = False
@@ -217,6 +283,13 @@ class Session:
         self.on_language: Callable[["Session"], None] | None = None
         self.language_info: dict | None = None
         self._detected: dict | None = None
+        # `detector_status()` → (`loading` | `ready` | `dead`, когда процесс стал готов): срок ответа
+        # после `stop` считается от готовности, а не от отправки — Whisper мог ещё грузиться.
+        self.detector_status: Callable[[], tuple[str, float | None]] | None = None
+        self._detect_at = 0.0
+        self._detect_default = language
+        # Ответ не пришёл в срок: диктовка идёт на языке по умолчанию, но опоздавший ответ применится.
+        self._detect_pending = False
         # Раскладка хвоста для `final.timings` (шаг 0): ставит сервер в `_prepare`.
         self.prepare_ms: float | None = None
         self.model_load_ms: float | None = None
@@ -249,6 +322,7 @@ class Session:
 
         if self.cancelled:
             return []
+        self._apply_late_language()
         total = self.samples
         self._checked = total
         tail = self._pcm(self._cut, total)
@@ -261,13 +335,25 @@ class Session:
             spans = self.pool.speech_spans(waveform)
             self.vad_ms += (time.monotonic() - started) * 1000
             planned, cut = plan_windows(spans, len(waveform), final=final)
-            if final and not planned and not self.windows and len(waveform) >= SAMPLE_RATE // 2:
+            if final and planned:
+                planned[-1] = extend_final_window(waveform, planned[-1])
+            if final and (planned or self.windows):
+                # Короткое слово после последней найденной речи: VAD его не увидел.
+                after = planned[-1][1] if planned else 0
+                speech = (waveform[planned[-1][0]:planned[-1][1]] if planned else
+                          np.frombuffer(self._pcm(self.windows[-1].start, self.windows[-1].end), dtype="<i2")
+                          .astype(np.float32) / 32768.0)
+                extra = final_tail_window(waveform, after, speech)
+                if extra is not None:
+                    planned.append(extra)
+            if (final and not planned and not self.windows and len(waveform) >= SAMPLE_RATE // 2
+                    and self._silence_safe()):
                 # VAD не нашёл речи во всей диктовке: всё равно даём модели шанс
                 # на тихую фразу — пустой ответ ничего не стоит.
                 planned = [(0, min(len(waveform), int(MAX_WINDOW_S * SAMPLE_RATE)))]
         if planned and self.languages and self.language_info is None:
             start, end = planned[0]
-            self._resolve_language(waveform[start:end])
+            self._resolve_language(waveform[start:end], patient=final)
         made: list[Window] = []
         for number, (start, end) in enumerate(planned):
             window = Window(len(self.windows), self._cut + start, self._cut + end)
@@ -279,6 +365,12 @@ class Session:
             self._flush()
         self._cut += cut
         return made
+
+    def _silence_safe(self) -> bool:
+        """Основной модели можно дать звук без найденной речи: Whisper на тишине выдумывает
+        («Thank you.»), поэтому пул отвечает за свою модель; без ответа — можно, как раньше."""
+        check = getattr(self.pool, "silence_safe", None)
+        return True if check is None else bool(check(self.language))
 
     # --- пачки проверяющей ------------------------------------------------
 
@@ -317,7 +409,15 @@ class Session:
 
     def _recognize(self, window: Window, waveform: Any) -> None:
         started = time.monotonic()
-        window.text = self.pool.recognize(waveform, self.language, hotwords=self.hotwords)
+        try:
+            window.text = self.pool.recognize(waveform, self.language, hotwords=self.hotwords)
+        except ModelMissing:
+            raise  # модели нет вовсе — это ответ пользователю, а не сбой одного окна
+        except Exception as error:  # noqa: BLE001 — сбой одного окна не стоит всей диктовки
+            # Окно остаётся пустым и нарезанным: остальной текст доходит до `final`,
+            # а разрез двигается дальше — повторного распознавания дублем не будет.
+            self.failed_windows += 1
+            _log(f"{self.id}: окно {window.index} не распознано: {crash_report.describe(error)}")
         window.primary_ms = (time.monotonic() - started) * 1000
         _log(
             f"{self.id}: окно {window.index} {window.start_s:.1f}–{window.end_s:.1f} с, "
@@ -344,15 +444,18 @@ class Session:
     def live_text(self) -> str:
         return " ".join(window.text for window in self.windows if window.text).strip()
 
-    def _resolve_language(self, waveform: Any) -> None:
-        """L5: язык по первому окну среди `languages`; не вышло — остаётся язык по умолчанию."""
+    def _resolve_language(self, waveform: Any, *, patient: bool = False) -> None:
+        """L5: язык по первому окну среди `languages`; не вышло — остаётся язык по умолчанию.
+
+        Ответ ждём `TIMEOUT_S`. Не пришёл — диктовка идёт на языке по умолчанию, но опоздавший
+        ответ ещё применится (`_apply_late_language`): окна распознаются заново на верном языке.
+        `patient` — уже после `stop`: звука больше не будет, и срок считается от готовности
+        процесса Whisper (он мог ещё грузиться), а не от отправки.
+        """
         import numpy as np
 
-        from .language_detect import TIMEOUT_S, pick_language
-
-        started = time.monotonic()
-        default = self.language
-        probs: dict | None = None
+        self._detect_at = started = time.monotonic()
+        self._detect_default = self.language
         submitted = False
         if self.detector is not None:
             pcm = (np.clip(np.asarray(waveform, dtype=np.float32), -1.0, 1.0) * 32767).astype("<i2").tobytes()
@@ -360,25 +463,87 @@ class Session:
                 submitted = bool(self.detector(f"{self.id}:detect", self.id, pcm, list(self.languages)))
             except Exception as error:  # noqa: BLE001 — без определения диктовка идёт как раньше
                 _log(f"{self.id}: определение языка: {crash_report.describe(error)}")
-        if submitted:
-            deadline = started + TIMEOUT_S
-            with self._verifier_done:
-                while self._detected is None and not self.cancelled:
-                    left = deadline - time.monotonic()
-                    if left <= 0:
+        probs = self._wait_detect(patient=patient) if submitted else None
+        self._detect_pending = submitted and probs is None
+        self._set_language(probs, "timeout" if submitted else "unavailable")
+
+    def _wait_detect(self, *, patient: bool) -> dict | None:
+        """Ответ на определение языка или None. Терпеливо (после `stop`): пока Whisper грузится,
+        срок не идёт, но всё вместе — не дольше `COLD_WAIT_S`; «Вставить быструю версию» обрывает."""
+        from .language_detect import COLD_WAIT_S, TIMEOUT_S
+
+        cap = self._detect_at + COLD_WAIT_S
+        with self._verifier_done:
+            while self._detected is None and not self.cancelled:
+                now = time.monotonic()
+                deadline = self._detect_at + TIMEOUT_S
+                if patient and self.detector_status is not None:
+                    if self._skip_wait:
                         break
-                    self._verifier_done.wait(min(left, 0.05))
-                probs = self._detected
-        language, share = pick_language(probs, self.languages, default)
+                    state, ready_at = self.detector_status()
+                    if state == "dead":
+                        break
+                    deadline = cap if state == "loading" else min(cap, max(self._detect_at, ready_at or 0.0) + TIMEOUT_S)
+                if now >= deadline:
+                    break
+                self._verifier_done.wait(min(deadline - now, 0.05))
+            return self._detected
+
+    def _set_language(self, probs: dict | None, missing: str, *, late: bool = False) -> None:
+        from .language_detect import pick_language
+
+        language, share = pick_language(probs, self.languages, self._detect_default)
+        # Причина отката: `timeout` — Whisper не ответил в срок, `unavailable` — окно не ушло,
+        # `empty` — ответ без вероятностей (ошибка в процессе).
+        reason = missing if probs is None else (None if probs else "empty")
         self.language_info = {
             "detected": language, "share": share, "probs": probs or {}, "from": list(self.languages),
-            "fallback": probs is None, "ms": round((time.monotonic() - started) * 1000, 1),
+            "fallback": reason is not None, "ms": round((time.monotonic() - self._detect_at) * 1000, 1),
+            **({"reason": reason} if reason else {}), **({"late": True} if late else {}),
         }
-        _log(f"{self.id}: язык {language} (доля {share}, {self.language_info['ms']:.0f} мс)")
-        if language != self.language:
-            self.language = language
-            if self.on_language is not None:
-                self.on_language(self)
+        _log(f"{self.id}: язык {language} (доля {share}, {self.language_info['ms']:.0f} мс"
+             + (f", откат: {reason}" if reason else "") + (", ответ опоздал" if late else "") + ")")
+        if language == self.language:
+            return
+        redo = bool(self.windows)
+        if redo and self.verifier is not None:
+            self.verifier.cancel(self.id)  # пачки на старом языке сравнивать не с чем
+        self.language = language
+        if self.on_language is not None:
+            self.on_language(self)
+        if redo:
+            self._redo_windows()
+
+    def _apply_late_language(self, *, wait: bool = False) -> None:
+        """Рабочий поток: опоздавший ответ на определение языка. `wait` — на `stop` дождаться его."""
+        if not self._detect_pending:
+            return
+        if wait:
+            probs = self._wait_detect(patient=True)
+        else:
+            with self._verifier_done:
+                probs = self._detected
+        if probs is None:
+            return
+        self._detect_pending = False
+        self._set_language(probs, "timeout", late=True)
+
+    def _redo_windows(self) -> None:
+        """Язык сменился после первых окон: они распознаны не той моделью — распознаём заново
+        (звук всей диктовки в буфере). Старые пачки проверяющей в итог не идут."""
+        import numpy as np
+
+        for pack in self.packs:
+            pack.void, pack.sent, pack.windows = True, True, []
+        self.failed_windows = 0
+        for window in self.windows:
+            window.text, window.pack = "", None
+        _log(f"{self.id}: язык {self.language} — заново {len(self.windows)} окон")
+        self.language_info["redone"] = len(self.windows)
+        for window in self.windows:
+            self._pack(window, flush=False)
+            samples = np.frombuffer(self._pcm(window.start, window.end), dtype="<i2").astype(np.float32) / 32768.0
+            self._recognize(window, samples)
 
     def on_verifier(self, message: dict) -> None:
         """Ответ проверяющей на пачку (поток чтения клиента)."""
@@ -400,7 +565,7 @@ class Session:
             self._verifier_done.notify_all()
 
     def _submitted(self) -> list[Pack]:
-        return [pack for pack in self.packs if pack.submitted]
+        return [pack for pack in self.packs if pack.submitted and not pack.void]
 
     def skip_wait(self) -> None:
         """«Вставить быструю версию»: перестать ждать проверяющую, взять то, что уже готово."""
@@ -451,9 +616,14 @@ class Session:
         stop_at = time.monotonic() if stop_at is None else stop_at
         queued_ms = (time.monotonic() - stop_at) * 1000
         self.step(final=True)
+        # Определение языка не успело к первому окну (холодный Whisper): дожидаемся здесь.
+        self._apply_late_language(wait=True)
         self._flush()
         remainder_ms = (time.monotonic() - stop_at) * 1000 - queued_ms
         raw_text = self.live_text()
+        if self.failed_windows and not raw_text:
+            # Отдавать нечего: пусть пользователь увидит ошибку, а не пустую вставку.
+            raise RuntimeError(f"основная модель не распознала ни одного окна ({self.failed_windows})")
 
         # Сегмент — пачка целиком: текст её окон против текста проверяющей.
         auto = [entry for entry in self.personal if entry.auto_apply]
@@ -498,7 +668,7 @@ class Session:
         compared = segments
         if status in ("done", "late") and used:
             with self._verifier_done:
-                answered = {pack.index: pack.text for pack in self.packs if pack.text is not None}
+                answered = {pack.index: pack.text for pack in self.packs if pack.text is not None and not pack.void}
             verifier_segments = [
                 Segment(pack.start_s, pack.end_s, answered[pack.index])
                 for pack in self.packs
@@ -568,10 +738,11 @@ class Session:
             "verifier": status,
             "stats": {
                 "windows": len(self.windows),
-                "packs": len(self.packs),
-                "verified": sum(1 for pack in self.packs if pack.text is not None),
+                "packs": sum(1 for pack in self.packs if not pack.void),
+                "verified": sum(1 for pack in self.packs if pack.text is not None and not pack.void),
                 "review_items": analysis.review_items,
                 "doubt_candidates": analysis.candidates,
+                **({"failed_windows": self.failed_windows} if self.failed_windows else {}),
             },
         }
 

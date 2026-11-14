@@ -69,7 +69,8 @@ struct CalendarSourcesRows: View {
         switch kind {
         case .google:
             return model.googleCalendarAvailable ? L("Вход через браузер, только чтение.", "Sign in in the browser, read-only.")
-                                                 : L("Недоступно в этой сборке.", "Not available in this build.")
+                                                 : L("Добавьте аккаунт Google в macOS и отметьте его календари в строке «Календарь macOS».",
+                                                     "Add your Google account to macOS, then tick its calendars under macOS Calendar.")
         case .yandex: return L("Логин и пароль приложения Яндекса, только чтение.", "Yandex login and an app password, read-only.")
         case .mac: return L("Календари, которые уже есть на этом Mac.", "Calendars already on this Mac.")
         }
@@ -78,8 +79,11 @@ struct CalendarSourcesRows: View {
     private func details(_ kind: CalendarAccounts.Kind) -> String {
         switch kind {
         case .google:
-            L("Mostik откроет страницу входа Google в браузере и попросит только чтение календаря. Ключ доступа хранится в связке ключей, события запрашиваются раз в 5 минут напрямую у Google.",
-              "Mostik opens Google sign-in in your browser and asks for calendar read access only. The access key stays in the keychain; events are fetched from Google directly every 5 minutes.")
+            model.googleCalendarAvailable
+                ? L("Mostik откроет страницу входа Google в браузере и попросит только чтение календаря. Ключ доступа хранится в связке ключей, события запрашиваются раз в 5 минут напрямую у Google.",
+                    "Mostik opens Google sign-in in your browser and asks for calendar read access only. The access key stays in the keychain; events are fetched from Google directly every 5 minutes.")
+                : L("В этой сборке нет прямого входа в Google. Путь через macOS: Системные настройки → Учётные записи интернета → Google, включить «Календари». После этого календари Google появятся в списке «Календарь macOS» ниже.",
+                    "This build has no direct Google sign-in. Go through macOS: System Settings → Internet Accounts → Google, turn on Calendars. Google calendars then show up under macOS Calendar below.")
         case .yandex:
             L("Подключение по CalDAV к caldav.yandex.ru. Нужен пароль приложения: id.yandex.ru → Безопасность → Пароли приложений → Календарь CalDAV. Пароль хранится в связке ключей, события запрашиваются раз в 5 минут.",
               "CalDAV connection to caldav.yandex.ru. You need an app password: id.yandex.ru → Security → App passwords → Calendar CalDAV. It stays in the keychain; events are fetched every 5 minutes.")
@@ -102,10 +106,12 @@ struct CalendarSourcesRows: View {
                     .buttonStyle(.mostik(.quiet, compact: true))
                 Button(L("Отключить", "Disconnect")) { model.onDisconnectCalendar(kind) }
                     .buttonStyle(.mostik(.quiet, compact: true))
+            } else if kind == .google, !model.googleCalendarAvailable {
+                Button(L("Учётные записи…", "Internet Accounts…")) { model.onOpenInternetAccounts() }
+                    .buttonStyle(.mostik(.secondary, compact: true))
             } else {
                 Button(kind == .mac ? L("Выбрать…", "Choose…") : L("Подключить…", "Connect…")) { model.onConnectCalendar(kind) }
                     .buttonStyle(.mostik(.secondary, compact: true))
-                    .disabled(kind == .google && !model.googleCalendarAvailable)
             }
         }
     }

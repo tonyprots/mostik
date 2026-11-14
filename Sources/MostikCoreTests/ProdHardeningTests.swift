@@ -168,6 +168,62 @@ private func runLogPolicyTests() {
           "счётчик падений движка в «Проверке»")
 }
 
+/// Аудит 2026-11-14, S3/S4/S14/S19: повторы запуска входа, хвост записи, разрыв дорожки встречи.
+func runAudioTractTests() {
+    // Повторы: три попытки с растущей паузой, потом — «потерян» и счёт с начала.
+    var retry = WarmMicPolicy.Retry()
+    let first = retry.next()
+    equal(first?.delay, 0.3, "первый повтор — через 0,3 с")
+    check(retry.isCurrent(first?.generation ?? -1), "таймер первого повтора действует")
+    let second = retry.next()
+    equal(second?.delay, 1, "второй повтор — через секунду")
+    check(!retry.isCurrent(first?.generation ?? -1), "новый повтор отменяет таймер прежнего")
+    equal(retry.next()?.delay, 2.5, "третий повтор — через 2,5 с")
+    check(retry.next() == nil, "после трёх попыток вход считается потерянным")
+    equal(retry.next()?.delay, 0.3, "после исчерпания счёт начинается заново")
+    let pending = retry.next()
+    retry.succeeded()
+    check(!retry.isCurrent(pending?.generation ?? -1), "вход запустился — ждущий повтор не сработает")
+    equal(retry.next()?.delay, 0.3, "после успеха счёт с начала")
+
+    // Хвост: ждём буфер, накрывающий момент отпускания клавиши.
+    var tail = TailDrain(requestedAt: 10)
+    check(!tail.feed(end: 9.98), "буфер кончился до отпускания — ждём следующий")
+    check(tail.feed(end: 10.08), "буфер накрыл момент отпускания — хвост получен")
+    tail = TailDrain(requestedAt: 10)
+    check(tail.feed(end: 10), "конец буфера ровно в момент отпускания — хватит")
+    tail = TailDrain(requestedAt: 10)
+    check(!tail.feed(end: nil), "без времени захвата один буфер — мало")
+    check(tail.feed(end: nil), "без времени захвата хватает двух буферов")
+    tail = TailDrain(requestedAt: 10)
+    check(!tail.feed(end: 3) && !tail.feed(end: 3.1), "часы тапа отстали — ещё ждём")
+    check(tail.feed(end: 3.2), "часы тапа отстали — после трёх буферов не держим")
+    check(TailDrain.timeout <= 0.3, "хвост не держит пользователя дольше 0,3 с")
+
+    // Разрыв дорожки: тишина ровно на время, пока вход молчал.
+    var gap = TrackGap()
+    equal(gap.close(bufferStart: 5), 0, "разрыва не было — тишину не пишем")
+    gap.open(lastAudioEnd: 100, paused: false)
+    gap.open(lastAudioEnd: 100.4, paused: false)
+    equal(gap.close(bufferStart: 101.5), 1.5, "разрыв считается от первого сигнала перенастройки")
+    check(!gap.pending, "разрыв закрыт")
+    equal(gap.close(bufferStart: 102), 0, "второй раз тишину не пишем")
+    gap.open(lastAudioEnd: 100, paused: false)
+    equal(gap.close(bufferStart: 100.02), 0, "20 мс — разброс буферов, не разрыв")
+    // Пауза посреди разрыва в тишину не входит: на паузе стоят обе дорожки.
+    gap.open(lastAudioEnd: 100, paused: false)
+    gap.pause(at: 101)
+    gap.resume(at: 160)
+    equal(gap.close(bufferStart: 160.5), 1.5, "пауза посреди разрыва не считается")
+    gap.open(lastAudioEnd: 100, paused: true)
+    gap.resume(at: 130)
+    equal(gap.close(bufferStart: 130.25), 0.25, "перенастройка на паузе — разрыв считается с продолжения")
+    gap.open(lastAudioEnd: 100, paused: true)
+    check(gap.pending, "на паузе разрыв ждёт продолжения")
+    gap.pause(at: 105); gap.resume(at: 110)
+    equal(gap.close(bufferStart: 109.9), 0, "буфер раньше точки отсчёта — отрицательной тишины нет")
+}
+
 func runWarmMicTests() {
     typealias S = WarmMicPolicy.State
     let builtIn: UInt32 = 77, airpods: UInt32 = 91

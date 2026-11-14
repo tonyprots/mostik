@@ -4,7 +4,8 @@
 облачная — стоит секунд. Правила работают и без причёсывания. Каждое включается отдельно
 (`start.rules`), без поля правил нет вовсе — старое поведение.
 
-- `commands` — «новый абзац», «новая строка» (`new paragraph`, `new line`) → перенос;
+- `commands` — «новый абзац», «новая строка» (`new paragraph`, `new line`) → перенос; только
+  отдельной фразой, со знаком или краем текста с обеих сторон;
 - `scratch` — «зачеркни», «удали последнюю фразу» (`scratch that`) → предыдущее предложение
   снимается вместе с командой. «Нет, на самом деле…» сюда не входит: после вопроса или чужого
   мнения это обычная речь («Сложно? Нет, на самом деле просто»). Её разбирает модель по правилу
@@ -55,11 +56,12 @@ def _capitalize_from(text: str, index: int) -> str:
 
 
 def _standalone(text: str, start: int, end: int) -> bool:
-    """Команда стоит отдельно: перед ней начало или знак, или после неё знак или конец.
-    «Открой новый абзац в документе» — просьба, а не команда."""
+    """Команда стоит отдельно: перед ней начало или знак, и после неё знак или конец.
+    «Открой новый абзац в документе» — просьба, «В таблице появилась новая строка.» — обычная
+    речь: знака с одной стороны мало."""
     before = text[:start].rstrip(" \t")
     after = text[end:].lstrip(" \t")
-    return (not before or before[-1] in ".!?…,;:\n") or (not after or after[0] in ".!?…,;:\n")
+    return (not before or before[-1] in ".!?…,;:\n") and (not after or after[0] in ".!?…,;:\n")
 
 
 def apply_commands(text: str, language: str = "ru") -> str:
@@ -95,13 +97,21 @@ _SCRATCH = {
 
 def apply_scratch(text: str, language: str = "ru") -> str:
     """Команда — только отдельной фразой: за ней знак препинания или конец текста
-    («зачеркни вторую строку в таблице» — просьба агенту, её не трогаем)."""
+    («зачеркни вторую строку в таблице» — просьба агенту, её не трогаем), а перед ней — начало
+    или знак («найди слово и зачеркни.» — просьба). После запятой команда — только вставкой
+    между запятыми: «If it is wrong, delete that.» — конец обычной фразы."""
     lang = "en" if language == "en" else "ru"
-    pattern = re.compile(rf"(?<![\w-]){_SCRATCH[lang]}(?![\w-])[ \t]*(?:[.,;:!]+|$)[ \t]*", re.I)
+    pattern = re.compile(rf"(?<![\w-]){_SCRATCH[lang]}(?![\w-])[ \t]*(?P<mark>[.,;:!]+|$)[ \t]*", re.I)
+    position = 0
     while True:
-        match = pattern.search(text)
+        match = pattern.search(text, position)
         if match is None:
             return text.strip()
+        before = text[: match.start()].rstrip(" \t")
+        inner = bool(before) and before[-1] in ",;:"
+        if (before and before[-1] not in ".!?…\n,;:") or (inner and match.group("mark")[:1] not in (",", ";", ":")):
+            position = match.end()
+            continue
         head = text[: match.start()].rstrip(" \t,;")
         # Предыдущее предложение: от последнего конца предложения (или переноса) до команды.
         cut = max((head.rfind(mark, 0, len(head) - 1) for mark in ".!?…\n"), default=-1)
@@ -109,6 +119,7 @@ def apply_scratch(text: str, language: str = "ru") -> str:
         tail = text[match.end():]
         joined = kept.rstrip(" \t") + (" " if kept and not kept.endswith("\n") and tail else "") + tail
         text = _capitalize_from(joined, len(kept))
+        position = 0
 
 
 # --- списки «во-первых, во-вторых» ---------------------------------------------------------------
@@ -287,8 +298,13 @@ _RU_ORDINAL_SUFFIX = {
     "ую": "ю", "ью": "ю", "ых": "х", "ьих": "х", "ыми": "ми", "ьими": "ми",
 }
 # Перед месяцем и «годом» наращение не пишут: «24 октября», «в 2026 году».
+# Формы перечислены точно: «первая майка», «первый годовой отчёт» — не дата.
 _RU_BARE_AFTER = re.compile(
-    r"^(?:январ|феврал|март|апрел|ма[яйюе]|июн|июл|август|сентябр|октябр|ноябр|декабр|год)\w*$", re.I)
+    r"^(?:(?:январ|феврал|апрел|июн|июл|сентябр|октябр|ноябр|декабр)(?:ь|я|ю|ём|ем|е)|"
+    r"(?:март|август)(?:а|у|ом|е)?|ма(?:й|я|ю|ем|е))$", re.I)
+# «Год» без наращения — только после года цифрами: «в 2026 году», но «второй год», «21-й год».
+_RU_YEAR_AFTER = re.compile(r"^год(?:а|у|ом|е)?$", re.I)
+_YEAR_FROM = 1000
 
 
 def _ru_ordinal(word: str) -> tuple[int, str] | None:
@@ -433,7 +449,12 @@ def _digit_run(tokens: list[str], start: int) -> tuple[str, int]:
     return digits, j
 
 
-_CLOCK_PREPS = {"в", "к", "до", "с", "со", "после", "около", "на"}
+# «На» сюда не входит: «минут на десять пятнадцать» — диапазон, а не время.
+_CLOCK_PREPS = {"в", "к", "до", "с", "со", "после", "около"}
+# То, что считают: после «двадцати тридцати» такое слово значит диапазон («с 20–30 человек»).
+_COUNTED_RU = re.compile(
+    r"^(?:человек\w*|люд\w+|раз|раза|участник\w*|сотрудник\w*|пользовател\w*|клиент\w*|компани\w*|"
+    r"задач\w*|строк\w*|файл\w*|страниц\w*|слов\w*|тест\w*|запрос\w*|вариант\w*)$", re.I)
 
 
 def _clock(tokens: list[str], start: int, end: int, hours: int) -> tuple[int, int] | None:
@@ -451,7 +472,47 @@ def _clock(tokens: list[str], start: int, end: int, hours: int) -> tuple[int, in
         return None
     if minute[1] < len(tokens) and _ru_ordinal(tokens[minute[1]]) is not None:
         return None  # «в десять двадцать пятого» — это дата, а не 10:20
+    if minute[1] < len(tokens) and (_UNITS_RU.match(tokens[minute[1]]) or _COUNTED_RU.match(tokens[minute[1]])):
+        return None  # «до двадцати тридцати процентов», «с двадцати тридцати человек» — диапазон
     return minute[0], minute[1]
+
+
+# Одно слово-разряд без множителя — число только в единственном числе и перед единицей
+# («тысяча рублей»); «тысячи компаний», «миллионы людей», «тысячу раз» — не цифры.
+_RU_SINGLE_SCALE = frozenset({"тысяча", "тысячу", "миллион", "миллиард"})
+# Омонимы: «сорока» одна — число только перед единицей («сорока минут»), «семью» одна — никогда.
+_RU_HOMONYMS = {"сорока": True, "семью": False}
+
+
+def _not_a_number(tokens: list[str], start: int, end: int, language: str, has_unit: bool) -> bool:
+    """Одно слово, похожее на число, но числом здесь не являющееся."""
+    if end - start != 1:
+        return False
+    low = tokens[start].lower()
+    hit = (_en_value if language == "en" else _ru_value)(low)
+    if hit is not None and hit[0] == "scale":
+        return not (has_unit and (language == "en" or low in _RU_SINGLE_SCALE))
+    if language != "ru":
+        return False
+    if low in _RU_HOMONYMS:
+        return not (_RU_HOMONYMS[low] and has_unit)
+    # «ни одной минуты» — отрицание, а не количество.
+    return hit is not None and hit[1] == 1 and start > 0 and tokens[start - 1].lower() == "ни"
+
+
+def _number_chain(tokens: list[str], end: int, language: str) -> int:
+    """Числа подряд («два три дня», «на десять пятнадцать») — диапазон или перечисление, а не
+    одно число: позиция после всей цепочки. Нет соседнего числа — `end`. Порядковое следом
+    («десять двадцать пятого») цепочкой не считается: его разбирает правило порядковых."""
+    j = end
+    while j < len(tokens):
+        following = _parse_number(tokens, j, language)
+        if following is None or not following[2]:
+            break
+        if language == "ru" and _ordinal_number(tokens, j, following) is not None:
+            break
+        j = following[1]
+    return j
 
 
 _FRACTIONS_RU = {"десятых": 10, "десятая": 10, "десятую": 10, "сотых": 100, "сотая": 100, "сотую": 100,
@@ -482,7 +543,7 @@ def _ordinal_number(tokens: list[str], start: int,
         if last is not None and (inner_value == 0 or _joins(inner_value, last[0])):
             year = inner_value + last[0]
             after = tokens[inner_end + 1] if inner_end + 1 < len(tokens) else ""
-            if year < 100 and re.match(r"^год", after, re.I):
+            if year < 100 and _RU_YEAR_AFTER.match(after):
                 return value * 100 + year, inner_end + 1, last[1]
     return None
 
@@ -504,7 +565,8 @@ def apply_numbers(text: str, language: str = "ru") -> str:
             if ordinal_end is not None:
                 value, end, suffix = ordinal_end
                 following = tokens[end] if end < len(tokens) else ""
-                bare = bool(following) and bool(_RU_BARE_AFTER.match(following))
+                bare = bool(following) and (bool(_RU_BARE_AFTER.match(following))
+                                            or (value >= _YEAR_FROM and bool(_RU_YEAR_AFTER.match(following))))
                 if value >= 10 or bare:
                     out.append(text[cursor:spans[i][0]])
                     out.append(str(value) if bare else f"{value}-{suffix}")
@@ -549,11 +611,18 @@ def apply_numbers(text: str, language: str = "ru") -> str:
             out.append(f"{value}:{minutes:02d}")
             cursor, i = end_char, end
             continue
+        chain = _number_chain(tokens, end, lang)
+        if chain != end:
+            i = chain  # оба числа остаются словами: «через два три дня»
+            continue
         following = tokens[end] if end < len(tokens) else ""
         if following and ordinal.match(following):
             i = end + 1
             continue
         has_unit = bool(following) and bool(units.match(following))
+        if _not_a_number(tokens, i, end, lang, has_unit):
+            i = end
+            continue
         is_fraction = isinstance(number, float)
         if not (number >= 10 or has_unit or is_fraction):
             i = end

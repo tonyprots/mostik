@@ -215,10 +215,25 @@ public enum ExternalCalendar {
             reader.readabilityHandler = nil
             return .failure(RunError(message: UIText.pick("не запустилась: ", "failed to start: ") + error.localizedDescription))
         }
-        let timedOut = sink.done.wait(timeout: .now() + timeout) == .timedOut
+        // Один срок на всё: и на вывод, и на выход процесса. Вывод получен по EOF либо по выходу
+        // команды — внук, держащий канал, не превращает готовый ответ в «не ответила».
+        let deadline = Date().addingTimeInterval(timeout)
+        var finished = false
+        while !finished, Date() < deadline {
+            if sink.done.wait(timeout: .now() + 0.05) == .success {
+                finished = true
+            } else if !process.isRunning {
+                // Команда вышла: дочитать то, что уже лежит в канале.
+                _ = sink.done.wait(timeout: .now() + 0.3)
+                finished = true
+            }
+        }
+        // Закрыла stdout, но не вышла — ждём до того же срока, не дольше.
+        while finished, process.isRunning, Date() < deadline, !sink.lock.withLock({ sink.overflow }) { usleep(20_000) }
         reader.readabilityHandler = nil
         let (data, overflow) = sink.lock.withLock { (sink.data, sink.overflow) }
-        if timedOut || overflow, process.isRunning {
+        let timedOut = !overflow && (!finished || process.isRunning)
+        if process.isRunning {
             process.terminate()
             // Команда глушит SIGTERM — через секунду SIGKILL: висящий процесс не держит очередь календаря.
             let deadline = Date().addingTimeInterval(1)
@@ -258,16 +273,51 @@ public enum ExternalCalendar {
 /// Путь к команде календаря нельзя подменить правкой `settings.json` (как хук встречи, П10 С3):
 /// отпечаток пути, выбранного или подтверждённого в Mostik, лежит в связке ключей.
 /// Не совпал — команда не запускается, Mostik показывает путь и спрашивает.
+///
+/// Вместе с путём закреплено содержимое файла (ревью 2026-11-14, Н6): файл одиночный, и другой
+/// процесс того же пользователя мог переписать его и получить запуск с правами Mostik без вопроса.
+/// Запись в связке — `v2:<отпечаток пути>:<SHA-256 содержимого>`. Прежняя запись (только путь)
+/// согласием остаётся: при первом запуске команды она дополняется содержимым, которое есть сейчас.
+/// Что не закрыто: файлы, которые команда подключает сама (модули скрипта), и подмена между
+/// сверкой и запуском.
 public enum CalendarCommandTrust {
     public static let keychainAccount = "calendar-command"
+    static let prefix = "v2:"
 
+    /// Отпечаток пути — запись прежнего вида и первая половина новой.
     public static func digest(_ path: String) -> String {
         SHA256.hash(data: Data(("calendar:" + path).utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// SHA-256 файла, который действительно запустится (ссылка раскрыта, как в `ExternalCalendar.check`).
+    public static func contentDigest(of path: String) -> String? {
+        let real = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard let data = try? Data(contentsOf: real, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func record(_ path: String, content: String) -> String { prefix + digest(path) + ":" + content }
+
+    /// Что записано про этот путь.
+    enum Stored: Equatable {
+        /// Записи нет, она про другой путь или не читается.
+        case none
+        /// Согласие прежнего вида: содержимое ещё не закреплено.
+        case pathOnly
+        case pinned(content: String)
+    }
+
+    static func stored(for path: String, store: HookDigestStore) -> Stored {
+        guard case .value(let value) = store.read() else { return .none }
+        if value == digest(path) { return .pathOnly }
+        let parts = value.dropFirst(prefix.count).split(separator: ":", omittingEmptySubsequences: false)
+        guard value.hasPrefix(prefix), parts.count == 2, parts[0] == digest(path) else { return .none }
+        return .pinned(content: String(parts[1]))
+    }
+
+    /// Согласие на путь есть (содержимое сверяет `gate` перед каждым запуском).
     public static func isTrusted(_ path: String, store: HookDigestStore) -> Bool {
-        if case .value(let stored) = store.read() { return stored == digest(path) }
-        return false
+        stored(for: path, store: store) != .none
     }
 
     /// Какой путь запускать: только подтверждённый. Неподтверждённый возвращается для вопроса.
@@ -276,9 +326,33 @@ public enum CalendarCommandTrust {
         return isTrusted(path, store: store) ? (path, nil) : (nil, path)
     }
 
+    public enum Gate: Equatable, Sendable {
+        case run
+        /// Файл не тот, на который давали согласие: не запускать, спросить заново.
+        case changed
+    }
+
+    /// Сверка перед каждым запуском. `content` — отпечаток файла сейчас (nil — не прочитался:
+    /// тогда запуск сам упрётся в проверку файла, а закреплённое содержимое остаётся прежним).
+    public static func gate(_ path: String, store: HookDigestStore,
+                            content: (String) -> String? = CalendarCommandTrust.contentDigest) -> Gate {
+        switch stored(for: path, store: store) {
+        case .none:
+            return .changed
+        case .pathOnly:
+            // Согласие выдано до закрепления содержимого: не сбрасываем, а дополняем тем, что есть.
+            if let now = content(path) { _ = store.write(record(path, content: now)) }
+            return .run
+        case .pinned(let pinned):
+            guard let now = content(path) else { return .run }
+            return now == pinned ? .run : .changed
+        }
+    }
+
     /// Файл выбран в Mostik или подтверждён в окне — воля пользователя. false — отпечаток не записан.
     @discardableResult
-    public static func approve(_ path: String, store: HookDigestStore) -> Bool {
-        store.write(digest(path))
+    public static func approve(_ path: String, store: HookDigestStore,
+                               content: (String) -> String? = CalendarCommandTrust.contentDigest) -> Bool {
+        store.write(content(path).map { record(path, content: $0) } ?? digest(path))
     }
 }

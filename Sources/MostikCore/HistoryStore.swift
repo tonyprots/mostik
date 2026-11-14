@@ -125,7 +125,16 @@ public final class HistoryStore: @unchecked Sendable {
         line.append(UInt8(ascii: "\n"))
         if let handle = try? FileHandle(forWritingTo: fileURL) {
             defer { try? handle.close() }
-            try handle.seekToEnd()
+            let end = try handle.seekToEnd()
+            // Прошлый процесс упал посреди записи — файл кончается без перевода строки. Новую запись
+            // с новой строки: иначе она склеится с обрывком и пропадёт при ближайшей уборке.
+            if end > 0, let reader = try? FileHandle(forReadingFrom: fileURL) {
+                defer { try? reader.close() }
+                try? reader.seek(toOffset: end - 1)
+                if let last = try? reader.read(upToCount: 1), last != Data([UInt8(ascii: "\n")]) {
+                    line.insert(UInt8(ascii: "\n"), at: 0)
+                }
+            }
             try handle.write(contentsOf: line)
         } else {
             try line.write(to: fileURL, options: .atomic)

@@ -27,6 +27,7 @@ import fcntl
 import hashlib
 import json
 import os
+import threading
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -119,13 +120,17 @@ def upgrade_manifest(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_MANIFEST_LOCK = threading.RLock()
+
+
 def read_manifest(folder: Path) -> dict[str, Any] | None:
     data = read_json(manifest_path(folder))
     return upgrade_manifest(data) if isinstance(data, dict) else None
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    # pid + поток: две записи одного файла из разных потоков движка не делят временный файл.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
@@ -170,6 +175,11 @@ def base_manifest(folder: Path) -> dict[str, Any]:
 def update_manifest(folder: Path, patch: dict[str, Any]) -> dict[str, Any]:
     """Прочитать (или создать), слить `patch`, записать атомарно. Возвращает итог."""
     folder = Path(folder)
+    with _MANIFEST_LOCK:  # чтение-слияние-запись целиком: потоки движка не теряют патчи друг друга
+        return _update_manifest(folder, patch)
+
+
+def _update_manifest(folder: Path, patch: dict[str, Any]) -> dict[str, Any]:
     current = read_manifest(folder) or base_manifest(folder)
     merged = deep_merge(current, patch)
     merged["schema"] = SCHEMA
@@ -234,8 +244,10 @@ def front_matter(text: str) -> dict[str, Any]:
 def is_sensitive(folder: Path) -> bool:
     """Встреча чувствительная: флаг в манифесте ИЛИ `sensitive: true` в шапке `meeting.md`."""
     folder = Path(folder)
-    manifest = read_manifest(folder) or {}
-    if bool(manifest.get("sensitive")):
+    manifest = read_manifest(folder)
+    if manifest is None and manifest_path(folder).exists():
+        return True  # манифест есть, но не читается: пометку не видно — считаем закрытой
+    if bool((manifest or {}).get("sensitive")):
         return True
     try:
         text = (folder / MEETING_MD).read_text(encoding="utf-8")

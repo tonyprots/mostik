@@ -138,7 +138,7 @@ def run_recipe(payload: dict[str, Any], backends: dict[str, Any], emit: mai.Emit
     model = getattr(backend, "model", None)
     if isinstance(backend, polish_mod.ClaudeCliBackend):
         model = payload.get("model") or mai.MEETING_MODEL
-        backend = polish_mod.ClaudeCliBackend(backend.executable, model)
+        backend = backend.with_model(model)
     if emit:
         emit({"event": "progress", "task": "meeting_recipe", "stage": recipe.title(lang), "done": 0, "total": 1,
               "folder": str(folder)})

@@ -21,6 +21,9 @@ final class ExternalCalendarController {
     func start(onEventsChanged: @escaping () -> Void) {
         self.onEventsChanged = onEventsChanged
         calendar.command.onUpdate = { [weak self] status in self?.show(status) }
+        // Содержимое файла сверяется перед каждым запуском; прежнее согласие дополняется им само.
+        let store = self.store
+        calendar.command.mayRun = { path in CalendarCommandTrust.gate(path, store: store) == .run }
         let check = CalendarCommandTrust.reconcile(model.settings.calendarCommand, store: store)
         calendar.command.setPath(check.active)
         if let path = check.ask {
@@ -82,16 +85,21 @@ final class ExternalCalendarController {
     func refresh() { calendar.command.refresh() }
 
     /// Путь появился в настройках не через Mostik: показать его и спросить. По умолчанию — «Не запускать».
-    private func confirm(_ path: String) {
-        guard model.settings.calendarCommand == path, !CalendarCommandTrust.isTrusted(path, store: store) else { return }
+    /// `changed` — путь знакомый, но файл по нему уже не тот, на который давали согласие.
+    private func confirm(_ path: String, changed: Bool = false) {
+        guard model.settings.calendarCommand == path, changed || !CalendarCommandTrust.isTrusted(path, store: store) else { return }
         let ru = L10n.isRussian
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = ru ? "Подключить внешний календарь?" : "Connect an external calendar?"
+        alert.messageText = changed ? (ru ? "Файл команды календаря изменился" : "The calendar command file has changed")
+                                    : (ru ? "Подключить внешний календарь?" : "Connect an external calendar?")
         let problem = ExternalCalendar.check(path: path).map { "\n\n" + (ru ? "Сейчас не запустится: " : "Won’t run now: ") + ExternalCalendar.describe($0) } ?? ""
-        alert.informativeText = (ru ? "Путь к команде календаря вписан в настройки не в Mostik. Mostik будет запускать этот файл раз в несколько минут и читать из него встречи:\n\n"
-                                    : "The calendar command path was set outside Mostik. Mostik will run this file every few minutes and read meetings from it:\n\n")
-            + MeetingHookPrompt.visible(path) + problem
+        let lead = changed
+            ? (ru ? "Файл изменился с тех пор, как вы его разрешили. Если меняли его вы — разрешите снова: Mostik будет запускать его раз в несколько минут и читать из него встречи:\n\n"
+                  : "The file has changed since you allowed it. If you changed it yourself, allow it again: Mostik will run it every few minutes and read meetings from it:\n\n")
+            : (ru ? "Путь к команде календаря вписан в настройки не в Mostik. Mostik будет запускать этот файл раз в несколько минут и читать из него встречи:\n\n"
+                  : "The calendar command path was set outside Mostik. Mostik will run this file every few minutes and read meetings from it:\n\n")
+        alert.informativeText = lead + MeetingHookPrompt.visible(path) + problem
         alert.addButton(withTitle: ru ? "Не запускать" : "Don’t run")
         alert.addButton(withTitle: ru ? "Разрешить" : "Allow")
         MenuBarPanel.activateApp()
@@ -116,6 +124,9 @@ final class ExternalCalendarController {
             onEventsChanged()
         case .failed(let message):
             model.externalCalendarStatus = (ru ? "Ошибка: " : "Error: ") + message
+        case .changed(let path):
+            model.externalCalendarStatus = (ru ? "Ошибка: " : "Error: ") + (ru ? "файл команды изменился" : "the command file has changed")
+            confirm(path, changed: true)
         }
     }
 }

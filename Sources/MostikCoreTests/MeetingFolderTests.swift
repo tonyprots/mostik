@@ -239,6 +239,36 @@ func runMeetingCalendarTests() {
         equal(s.suggestion(at: 70, recording: false, enabled: true), nil, "другое приложение — снова ждём 10 с")
     }
     do {
+        // Конспект Телемоста (2026-11-09): идёт свой — запись не предлагаем. Подписи кнопки из снимков дерева Телемоста 3.3.
+        equal(TelemostSummary.isOn(title: nil, description: "Start the AI summary"), false)
+        equal(TelemostSummary.isOn(title: "Summarizing...", description: "Stop creating summary"), true)
+        equal(TelemostSummary.isOn(title: "Конспектирую…", description: nil), true, "подпись без описания")
+        equal(TelemostSummary.isOn(title: nil, description: "Остановить конспект"), true)
+        equal(TelemostSummary.isOn(title: nil, description: "Включить конспект"), false)
+        equal(TelemostSummary.isOn(title: nil, description: nil), nil, "непонятно — предлагаем как раньше")
+        // Предложение записи в звонке: ждём, пока конспект не определится.
+        var gate = TelemostSummary.Gate()
+        equal(gate.feed(nil, at: 0), .wait, "лобби: кнопки ещё нет — не предлагаем")
+        equal(gate.feed(false, at: 6), .wait, "вошли, конспект пока выключен — ждём, он включается сам")
+        equal(gate.feed(true, at: 9), .skip, "конспект пошёл — не предлагаем")
+        gate = TelemostSummary.Gate()
+        equal(gate.feed(false, at: 0), .wait)
+        equal(gate.feed(false, at: 11), .wait)
+        equal(gate.feed(false, at: 12), .show, "конспект выключен 12 с подряд — предлагаем запись")
+        gate = TelemostSummary.Gate()
+        equal(gate.feed(false, at: 0), .wait)
+        equal(gate.feed(nil, at: 10), .wait, "кнопка пропала — отсчёт выключенного начинается заново")
+        equal(gate.feed(false, at: 13), .wait)
+        equal(gate.feed(false, at: 25), .show)
+        gate = TelemostSummary.Gate()
+        equal(gate.feed(nil, at: 0), .wait)
+        equal(gate.feed(nil, at: 29), .wait)
+        equal(gate.feed(nil, at: 30), .show, "кнопку не нашли за 30 с — предлагаем, как для любого звонка")
+        check(TelemostSummary.isTelemostLink("https://telemost.yandex.ru/j/123"), "ссылка Телемоста")
+        check(TelemostSummary.isTelemostLink("https://telemost.360.yandex.ru/j/123"), "ссылка Телемоста 360")
+        check(!TelemostSummary.isTelemostLink("https://zoom.us/j/1") && !TelemostSummary.isTelemostLink(nil), "не Телемост")
+    }
+    do {
         equal(MeetingNotes.render(title: "Синк", agenda: ["Бюджет"], prep: " спросить про сроки "),
               "# Заметки: Синк\n\n## Повестка\n\n- [ ] Бюджет\n\n## Подготовка\n\nспросить про сроки\n")
         equal(MeetingNotes.render(title: "Sync", agenda: [], prep: "", language: "en"), "# Notes: Sync\n")

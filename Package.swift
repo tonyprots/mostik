@@ -18,5 +18,9 @@ let package = Package(
         .executableTarget(name: "MostikSnapshots", dependencies: ["MostikCore", "MostikUI"]),
         // Синтетические замеры без микрофона и разрешений (docs/bench.md).
         .executableTarget(name: "MostikBench", dependencies: ["MostikCore", "MostikKit", "MostikUI"]),
+        // Живая проверка аудио-тракта на настоящем микрофоне: scripts/swift.sh run MostikMicCheck
+        .executableTarget(name: "MostikMicCheck", dependencies: ["MostikCore", "MostikKit"]),
+        // Живая проверка жизненного цикла движка на настоящем Python: scripts/swift.sh run MostikEngineCheck
+        .executableTarget(name: "MostikEngineCheck", dependencies: ["MostikCore", "MostikKit"]),
     ]
 )

@@ -234,6 +234,9 @@ struct DictationDetail: View {
     @State private var confirmDelete = false
     /// Строка слова под вопросом, к которой только что прокрутили по щелчку в тексте.
     @State private var flashedDoubt: Int?
+    /// Слово под вопросом, у которого открыто поле «своё написание», и набранный текст.
+    @State private var editingDoubt: Int?
+    @State private var doubtDraft = ""
     @Environment(\.mostikSnapshot) private var snapshot
 
     var body: some View {
@@ -396,7 +399,7 @@ struct DictationDetail: View {
             VStack(spacing: 0) {
                 ForEach(Array(entry.doubts.enumerated()), id: \.offset) { i, doubt in
                     if i > 0 { Hairline(inset: DS.Space.s) }
-                    doubtRow(doubt)
+                    doubtRow(doubt, index: i)
                         .background(flashedDoubt == i ? Palette.doubtSoft : Color.clear,
                                     in: RoundedRectangle(cornerRadius: DS.Radius.card - 2, style: .continuous))
                         .id(Self.doubtRowID(i))
@@ -410,7 +413,44 @@ struct DictationDetail: View {
 
     static func doubtRowID(_ index: Int) -> String { "doubt-\(index)" }
 
-    private func doubtRow(_ doubt: Doubt) -> some View {
+    /// Предложенное написание неверно — человек вводит своё: текст записи правится, слово идёт в словарь.
+    private func doubtEditRow(_ doubt: Doubt) -> some View {
+        let typed = doubtDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let save = {
+            guard !typed.isEmpty else { return }
+            withAnimation(Motion.quick) {
+                model.onAcceptDoubt(entry.id, doubt.heard, typed)
+                editingDoubt = nil
+            }
+        }
+        return HStack(alignment: .center, spacing: DS.Space.s) {
+            Text(L("«\(doubt.heard)»", "“\(doubt.heard)”"))
+                .font(TType.bodyStrong)
+                .foregroundStyle(Palette.doubt)
+                .lineLimit(1)
+            Text("→").font(TType.body).foregroundStyle(Palette.inkTertiary)
+            MostikTextField(placeholder: L("Как было на самом деле", "What it really was"), text: $doubtDraft)
+                .onSubmit(save)
+            Button(L("Отмена", "Cancel")) { withAnimation(Motion.quick) { editingDoubt = nil } }
+                .buttonStyle(.mostik(.quiet, compact: true))
+            Button(action: save) { Label(L("Запомнить", "Remember"), systemImage: "checkmark") }
+                .buttonStyle(.mostik(.secondary, compact: true))
+                .disabled(typed.isEmpty)
+        }
+        .padding(.leading, DS.Space.s)
+        .padding(.trailing, DS.Space.xs)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder private func doubtRow(_ doubt: Doubt, index: Int) -> some View {
+        if editingDoubt == index {
+            doubtEditRow(doubt)
+        } else {
+            doubtChoiceRow(doubt, index: index)
+        }
+    }
+
+    private func doubtChoiceRow(_ doubt: Doubt, index: Int) -> some View {
         HStack(alignment: .center, spacing: DS.Space.s) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -440,6 +480,14 @@ struct DictationDetail: View {
             .buttonStyle(.mostik(.quiet, compact: true))
             .help(L("Оставить как распознано и больше не предлагать", "Keep it as transcribed and stop suggesting this"))
             Button {
+                doubtDraft = doubt.suggestion.isEmpty ? doubt.heard : doubt.suggestion
+                withAnimation(Motion.quick) { editingDoubt = index }
+            } label: {
+                Label(L("Своё…", "Mine…"), systemImage: "pencil")
+            }
+            .buttonStyle(.mostik(.quiet, compact: true))
+            .help(L("Ввести, как было на самом деле", "Type what it really was"))
+            Button {
                 withAnimation(Motion.quick) {
                     model.onAcceptDoubt(entry.id, doubt.heard, doubt.suggestion.isEmpty ? doubt.heard : doubt.suggestion)
                 }
@@ -452,7 +500,7 @@ struct DictationDetail: View {
                   : L("Исправить текст и писать так дальше", "Fix the text and spell it this way from now on"))
         }
         .padding(.leading, DS.Space.s)
-        .padding(.trailing, DS.Space.xxs)
+        .padding(.trailing, DS.Space.xs)  // с отступом карточки — те же 12 pt, что у кнопки справа
         .padding(.vertical, 10)
     }
 

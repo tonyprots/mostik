@@ -17,6 +17,27 @@ _TOKEN = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_END = '.!?…»"'
+# Эти звуки бывают и словами: «5 мм», «размера эм», «вариант Э». «Эм», «ам» и «мм» внутри фразы
+# снимаются, только если отделены запятой или многоточием; после числа «мм» — миллиметры;
+# заглавная «Э» внутри фразы — название буквы.
+_AMBIGUOUS = frozenset({"э", "эм", "ам", "мм"})
+_AFTER_NUMBER = re.compile(r"\d\s?$")
+
+
+def _is_word(text: str, start: int, end: int) -> bool:
+    """Совпадение — не филлер, а слово: единица после числа, название буквы или размера."""
+    token = text[start:end]
+    if token.lower() not in _AMBIGUOUS:
+        return False
+    before = text[:start].rstrip(" \t")
+    if token.lower() == "мм" and _AFTER_NUMBER.search(text[:start]):
+        return True
+    if not before or before[-1] in _SENTENCE_END:
+        return False
+    if len(token) == 1:
+        return token.isupper()
+    return before[-1] not in ",;…" and not re.match(r"\s*(?:[,;…]|\.{2,})", text[end:])
+
 
 # GigaAM E2E приклеивает тире и кавычки к слову: «пункт— про», «этап—2»,
 # «раздела«Отчёты»». Между
@@ -49,13 +70,17 @@ def strip_fillers(text: str) -> tuple[str, int]:
     """Возвращает текст без филлеров и число убранных."""
     out = text
     removed = 0
+    position = 0
     while True:
-        match = _TOKEN.search(out)
+        match = _TOKEN.search(out, position)
         if match is None:
             break
-        removed += 1
         start, end = match.span()
-        own_sentence = re.match(r"[.!?…]\s*", out[end:])
+        if _is_word(out, start, end):
+            position = end
+            continue
+        removed += 1
+        own_sentence = re.match(r"[.!?…]+\s*", out[end:])
         tail = own_sentence or re.match(r"[,;:]?\s*", out[end:])
         before = out[:start].rstrip()
         after = out[end + tail.end():]
@@ -63,6 +88,7 @@ def strip_fillers(text: str) -> tuple[str, int]:
         if at_sentence_start and after and after[0].islower():
             after = after[0].upper() + after[1:]
         out = f"{before} {after}" if before and after else before + after
+        position = len(before)
     return out.strip(), removed
 
 

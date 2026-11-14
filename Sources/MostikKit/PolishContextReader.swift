@@ -9,11 +9,7 @@ import MostikCore
 @MainActor
 public enum PolishContextReader {
     /// Браузеры, у которых ищем адрес страницы: AXURL у веб-области или AXDocument у окна.
-    public nonisolated static let browsers: Set<String> = [
-        "com.apple.Safari", "com.apple.SafariTechnologyPreview", "com.google.Chrome", "com.google.Chrome.beta",
-        "com.microsoft.edgemac", "company.thebrowser.Browser", "com.brave.Browser", "ru.yandex.desktop.yandex-browser",
-        "org.mozilla.firefox", "app.zen-browser.zen", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
-    ]
+    public nonisolated static var browsers: Set<String> { BrowserHoldGuard.browsers }
 
     /// `field` — снимок поля в начале записи (R1): значение и выделение уже прочитаны, второй раз не ходим.
     /// `host` — домен страницы, прочитанный вне главного потока на старте (шаг 1, п. 1); здесь AX не ходим.

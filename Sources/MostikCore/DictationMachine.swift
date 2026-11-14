@@ -14,6 +14,8 @@ public enum DictationInput: Equatable, Sendable {
     case holdBegan(at: Double)
     case holdEnded(at: Double)
     case togglePressed(at: Double)
+    /// Кнопка «Вставить» на плашке: закончить запись в любом режиме — с удержанием, без рук, на паузе.
+    case finish(at: Double)
     /// Защёлка (H4): идущая по удержанию запись продолжается без рук.
     case latch
     /// Случайная отмена (⌥+буква во время удержания): действует только на запись.
@@ -127,6 +129,12 @@ public struct DictationMachine: Sendable {
             state = .transcribing(session: id, audioSeconds: t - started)
             return [.stopRecording(session: id)]
         case (.recording(let id, let started, true), .togglePressed(let t)):
+            isHandsFree = false
+            state = .transcribing(session: id, audioSeconds: t - started)
+            return [.stopRecording(session: id)]
+        case (.recording(let id, let started, _), .finish(let t)):
+            // Клавишу могли ещё держать: её отпускание придёт в расшифровку и не значит ничего.
+            clearTaps()
             isHandsFree = false
             state = .transcribing(session: id, audioSeconds: t - started)
             return [.stopRecording(session: id)]

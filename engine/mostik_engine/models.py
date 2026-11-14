@@ -56,17 +56,30 @@ def _local_path(entry: catalog.ModelEntry):
 
 
 class RemoteRecognizer:
-    """Основная модель в дочернем процессе (Whisper MLX) с синхронным `recognize`."""
+    """Основная модель в дочернем процессе (Whisper MLX) с синхронным `recognize`.
 
-    def __init__(self, model: str = "whisper") -> None:
+    `client` — общий процесс Whisper движка (он же проверяет русский и определяет язык): второй
+    экземпляр модели не поднимается. Без него (стенды, тесты) процесс свой.
+    """
+
+    PREFIX = "primary:"
+
+    def __init__(self, model: str = "whisper", client: Any = None) -> None:
         from .verifier_worker import VerifierClient
 
         self._lock = threading.Lock()
         self._results: dict[str, dict] = {}
         self._done = threading.Condition()
         self._counter = 0
-        # Выгрузку решает ModelPool.sweep, у самого процесса таймера простоя нет.
-        self.client = VerifierClient(idle_s=float("inf"), on_result=self._on_result, model=model)
+        self.shared = client is not None
+        if client is not None:
+            self.client = client
+            client.route(self.PREFIX, self._on_result)
+            # Пока основная в пуле, общий процесс не гасят ни простой проверяющей, ни её `stop`.
+            client.pin(self.PREFIX)
+        else:
+            # Выгрузку решает ModelPool.sweep, у самого процесса таймера простоя нет.
+            self.client = VerifierClient(idle_s=float("inf"), on_result=self._on_result, model=model)
 
     def _on_result(self, message: dict) -> None:
         with self._done:
@@ -86,9 +99,9 @@ class RemoteRecognizer:
         self.load()
         with self._lock:
             self._counter += 1
-            window_id = f"primary:{self._counter}"
+            window_id = f"{self.PREFIX}{self._counter}"
         pcm = (np.clip(np.asarray(waveform, dtype=np.float32), -1.0, 1.0) * 32767).astype("<i2").tobytes()
-        if not self.client.submit(window_id, "primary", pcm, language, hotwords):
+        if not self.client.submit(window_id, "primary", pcm, language, hotwords, urgent=True):
             raise RuntimeError(f"{self.client.model}: окно не отправлено")
         deadline = time.monotonic() + REMOTE_TIMEOUT_S
         with self._done:
@@ -103,7 +116,11 @@ class RemoteRecognizer:
         return str(message.get("text") or "")
 
     def stop(self) -> None:
-        self.client.stop()
+        if self.shared:
+            # Процесс общий: отпускаем, а гасит его простой проверяющей (`VerifierClient.sweep`).
+            self.client.unpin(self.PREFIX)
+        else:
+            self.client.stop()
 
 
 class ModelPool:
@@ -115,6 +132,11 @@ class ModelPool:
         self._primary: dict[str, Any] = {}
         self._vad: Any = None
         self._used: dict[str, float] = {}
+        self._whisper: Any = None
+
+    def share_whisper(self, client: Any) -> None:
+        """Процесс Whisper движка (проверяющая русского, определение языка) — он же основная для en."""
+        self._whisper = client
 
     # --- загрузка ---------------------------------------------------------
 
@@ -142,7 +164,7 @@ class ModelPool:
                 if entry is catalog.WHISPER_TURBO:
                     if not is_cached(entry):
                         raise ModelMissing(f"{entry.label}: модель не установлена ({entry.repo}, ~{entry.download_gb} ГБ) — скачайте в Настройках → Модели")
-                    model = RemoteRecognizer("whisper")
+                    model = RemoteRecognizer("whisper", client=self._whisper)
                     model.load()
                 else:
                     import onnx_asr
@@ -157,6 +179,12 @@ class ModelPool:
                 log(f"{entry.label} загружена за {time.monotonic() - started:.2f} с")
             self._used[language] = time.monotonic()
             return model
+
+    @staticmethod
+    def silence_safe(language: str) -> bool:
+        """Основной модели языка можно дать звук, где VAD не нашёл речи. Whisper на тишине
+        дописывает «Thank you.» и фразу подсказки, поэтому для него — нет."""
+        return PRIMARY_BY_LANGUAGE.get(language) is not catalog.WHISPER_TURBO
 
     def has_primary(self, language: str) -> bool:
         """Основная модель языка уже в памяти: `start` не будет её грузить."""

@@ -209,7 +209,7 @@ struct FormRow<Control: View>: View {
     }
 }
 
-/// Подпись строки: заголовок с «i» и одна строка пояснения.
+/// Подпись строки: заголовок с «i» и пояснение — обычно одна строка, длинное (как выйти из сбоя) — две.
 struct FormLabel: View {
     let title: String
     var hint: String? = nil
@@ -228,8 +228,9 @@ struct FormLabel: View {
             if let hint {
                 Text(hint).font(FormType.hint)
                     .foregroundStyle(warning ? Palette.doubt : Palette.inkSecondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
                     .help(hint)
             }
         }
@@ -265,7 +266,8 @@ struct FormCollapsed: View {
         HStack(alignment: .center, spacing: DS.Space.m) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(TType.body).foregroundStyle(Palette.inkSecondary).lineLimit(1)
-                Text(reason).font(FormType.hint).foregroundStyle(Palette.inkSecondary).lineLimit(1)
+                Text(reason).font(FormType.hint).foregroundStyle(Palette.inkSecondary).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let action {

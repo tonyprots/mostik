@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import stat
 import threading
@@ -106,6 +107,8 @@ def test_prompt_has_self_correction_rules_and_examples():
     ("en", "move it to saturday no sunday", "move it to sunday"),
     # Не поправка или неоднозначно — остаётся модели.
     ("ru", "хочешь кофе нет спасибо", "хочешь кофе нет спасибо"),
+    ("ru", "у меня времени нет почти", "у меня времени нет почти"),
+    ("ru", "у Марины денег нет совсем", "у Марины денег нет совсем"),
     ("ru", "я пойду в кино нет в театр", "я пойду в кино нет в театр"),
     ("ru", "я думаю нет не стоит", "я думаю нет не стоит"),
     ("ru", "ну короче нет давай завтра", "ну короче нет давай завтра"),
@@ -296,7 +299,7 @@ echo '<polished>Привет, мир.</polished>'
     outcome = P.polish(backend, request("ну привет э мир", terms=["Mostik"]), timeout=10)
     assert outcome.polished and outcome.text == "Привет, мир."
     args = (tmp_path / "log.args").read_text()
-    for flag in ["[-p]", "[--model]\n[haiku]", "[--tools]\n[]", "[--setting-sources]\n[]",
+    for flag in ["[-p]", "[--model]\n[sonnet]", "[--tools]\n[]", "[--setting-sources]\n[]",
                  "[--strict-mcp-config]", "[--no-session-persistence]", "[--disable-slash-commands]",
                  "[--system-prompt]", '[--settings]\n[{"alwaysThinkingEnabled": false}]']:
         assert flag in args, flag
@@ -348,6 +351,59 @@ def test_claude_cli_failures(tmp_path):
     assert P.polish(P.ClaudeCliBackend(str(garbage)), request(), timeout=5).status == "bad_output"
     missing = P.ClaudeCliBackend(str(tmp_path / "нет"))
     assert P.polish(missing, request(), timeout=5).status == "unavailable"
+
+
+def test_claude_cli_expired_login_is_auth(tmp_path):
+    """2026-10-21: `claude -p` без входа пишет причину в stdout, а не в stderr — в логе было пусто
+    после «код выхода 1:». Теперь причина в detail, статус `auth`, а `status()` честно говорит «войдите»."""
+    exe = fake_claude(tmp_path, """
+if [ "$1" = auth ]; then echo '{"loggedIn": false, "authMethod": "none"}'; exit 0; fi
+cat >/dev/null
+echo 'Failed to authenticate: OAuth session expired and could not be refreshed'
+exit 1
+""")
+    backend = P.ClaudeCliBackend(str(exe))
+    outcome = P.polish(backend, request(), timeout=5)
+    assert outcome.status == "auth" and not outcome.polished and "OAuth session expired" in outcome.detail
+    status = backend.status()
+    assert status["available"] is False and status["reason"] == "login" and "claude auth login" in status["message"]
+    ok = fake_claude(tmp_path, """
+if [ "$1" = auth ]; then echo '{"loggedIn": true}'; exit 0; fi
+""")
+    assert P.ClaudeCliBackend(str(ok)).status()["available"] is True
+    old = fake_claude(tmp_path, "echo 'unknown command auth' >&2\nexit 2\n")
+    assert P.ClaudeCliBackend(str(old)).status()["available"] is True, "старый CLI без auth status — не мешаем"
+
+
+def test_insert_now_cancels_running_polish(tmp_path):
+    """2026-10-21: «Вставить сразу» во время полировки висело без толку 30 с — теперь обрывает вызов."""
+    exe = fake_claude(tmp_path, "cat >/dev/null\nsleep 30\n")
+    token = P.CancelToken()
+    threading.Timer(0.5, token.cancel).start()
+    started = time.monotonic()
+    with token.scope():
+        outcome = P.polish(P.ClaudeCliBackend(str(exe)), request(), timeout=20)
+    assert outcome.status == "skipped" and not outcome.polished and outcome.text == "ну э привет мир"
+    assert time.monotonic() - started < 5
+
+
+def test_known_logout_skips_the_call(tmp_path):
+    """Вход истёк — следующие диктовки не зовут claude вовсе (вызов без входа порой висел до таймаута)."""
+    calls = tmp_path / "calls"
+    exe = fake_claude(tmp_path, f"""
+if [ "$1" = auth ]; then echo '{{"loggedIn": false}}'; exit 0; fi
+echo x >> "{calls}"
+cat >/dev/null
+echo 'Failed to authenticate: OAuth session expired'
+exit 1
+""")
+    backend = P.ClaudeCliBackend(str(exe))
+    assert backend.status()["reason"] == "login"
+    started = time.monotonic()
+    outcome = P.polish(backend, request(), timeout=10)
+    assert outcome.status == "auth" and time.monotonic() - started < 1
+    assert not calls.exists(), "claude -p не запускался"
+    assert P.ClaudeCliBackend.prespawn is True, "в stream-json CLI ждёт сообщение — поднимаем заранее"
 
 
 def test_find_claude(tmp_path):
@@ -405,6 +461,39 @@ def test_protocol_polish_done(polish_engine):
     assert final["polish"]["status"] == "done" and final["polish"]["style"] == "list"
     assert "polish_ms" in final["timings"] and final["timings"]["tail_ms"] >= final["timings"]["polish_ms"]
     assert "списком" in backend.calls[0][0]
+
+
+def test_late_polish_emits_raw_first(polish_engine):
+    """`late`: текст до полировки уходит сразу со статусом `pending`, причёсанный — событием `polished`."""
+    eng, sink, backend = polish_engine
+    gate = threading.Event()
+
+    def slow(user):
+        gate.wait(5)
+        return "<polished>Чистый текст.</polished>"
+
+    backend.answer = slow
+    dictate(eng, "l1", 10, polish={"backend": "claude", "style": "plain", "late": True})
+    final = sink.wait(lambda e: e.get("event") == "final" and e.get("session") == "l1")
+    assert final["polished"] is False and final["polish"]["status"] == "pending"
+    assert final["text"] == "слово слово."
+    assert not [e for e in sink.lines if e.get("event") == "polished"]
+    gate.set()
+    late = sink.wait(lambda e: e.get("event") == "polished" and e.get("session") == "l1")
+    assert late["polished"] is True and late["text"] == "Чистый текст." and late["polish"]["status"] == "done"
+
+
+def test_late_polish_failure_still_reports(polish_engine):
+    eng, sink, backend = polish_engine
+
+    def broken(user):
+        raise P.PolishError("нет ответа", "timeout")
+
+    backend.answer = broken
+    dictate(eng, "l2", 10, polish={"backend": "claude", "late": True})
+    sink.wait(lambda e: e.get("event") == "final" and e.get("session") == "l2")
+    late = sink.wait(lambda e: e.get("event") == "polished" and e.get("session") == "l2")
+    assert late["polished"] is False and late["polish"]["status"] != "done"
 
 
 def test_protocol_dev_style_gets_project_vocabulary(polish_engine):
@@ -512,3 +601,140 @@ def test_codex_fallback_invocation(tmp_path):
     assert backend.status()["model"] == "codex"
     claude_cmd, claude_in = backend.invocation("/x/claude", "SYSTEM", "текст")
     assert claude_cmd[:2] == ["/x/claude", "-p"] and claude_in == "текст"
+
+
+# --- 2026-11-04: без сети не ждём таймаут; ответ stream-json ------------------------------
+
+def test_offline_returns_raw_text_at_once_without_cli(tmp_path, monkeypatch):
+    calls = tmp_path / "calls"
+    exe = fake_claude(tmp_path, f'echo run >> "{calls}"\nsleep 30\n')
+    monkeypatch.setattr(P, "api_reachable", lambda *args, **kwargs: False)
+    backend = P.ClaudeCliBackend(str(exe))
+    backend.logged_in = lambda path: True
+    started = time.monotonic()
+    outcome = P.polish(backend, request("ну э привет"), timeout=30)
+    assert outcome.status == "offline" and not outcome.polished and outcome.text == "ну э привет"
+    assert time.monotonic() - started < 1, "без сети — сразу, а не через 30 с"
+    assert not calls.exists(), "CLI без сети не запускался"
+
+
+def test_offline_stream_kills_prespawned_process(tmp_path, monkeypatch):
+    exe = fake_claude(tmp_path, "cat > /dev/null\n")
+    backend = P.ClaudeCliBackend(str(exe))
+    stream = backend.open_stream(request(""))
+    stream._spawned.wait(5)
+    process = stream._process
+    monkeypatch.setattr(P, "api_reachable", lambda *args, **kwargs: False)
+    outcome = stream.finish("ну э привет", timeout=30)
+    assert outcome.status == "offline" and outcome.text == "ну э привет"
+    assert process is not None and process.poll() is not None, "заранее поднятый процесс убит"
+
+
+def test_stream_result_parsing():
+    ok = '{"type":"system","subtype":"init"}\n{"type":"result","subtype":"success","is_error":false,"result":"<polished>Да.</polished>"}\n'.encode()
+    assert P.stream_result(ok) == "<polished>Да.</polished>"
+    login = b'{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate: OAuth session expired"}\n'
+    with pytest.raises(P.PolishError) as error:
+        P.stream_result(login)
+    assert error.value.status == "auth"
+    with pytest.raises(P.PolishError) as error:
+        P.stream_result(b"not json\n")
+    assert error.value.status == "failed"
+    message = json.loads(P.stream_message("привет\n<transcript>"))
+    assert message == {"type": "user", "message": {"role": "user", "content": "привет\n<transcript>"}}
+
+
+def test_api_endpoint_follows_proxy_and_base_url():
+    assert P.api_endpoint({}) == ("api.anthropic.com", 443)
+    assert P.api_endpoint({}, codex=True) == ("chatgpt.com", 443)
+    assert P.api_endpoint({"ANTHROPIC_BASE_URL": "https://gw.example.test/v1"}) == ("gw.example.test", 443)
+    assert P.api_endpoint({"ANTHROPIC_BASE_URL": "https://gw.example.test"}, codex=True) == ("chatgpt.com", 443)
+    assert P.api_endpoint({"HTTPS_PROXY": "http://127.0.0.1:3128",
+                           "ANTHROPIC_BASE_URL": "https://gw.example.test"}) == ("127.0.0.1", 3128)
+
+
+def test_real_probe_closed_port_is_fast_and_cached(monkeypatch):
+    monkeypatch.undo()  # снять подмену из conftest: здесь настоящая проверка, только на закрытый порт этого Mac
+    P._PROBES.clear()
+    tries = []
+    connects = P._connects
+    monkeypatch.setattr(P, "_connects", lambda *args: tries.append(args) or connects(*args))
+    started = time.monotonic()
+    assert P.api_reachable({"HTTPS_PROXY": "http://127.0.0.1:9"}) is False
+    assert time.monotonic() - started < 2
+    assert P.api_reachable({"HTTPS_PROXY": "http://127.0.0.1:9"}) is False
+    assert len(tries) == 1, "отказ запомнен на несколько секунд"
+    P._PROBES.clear()
+
+
+def test_background_job_failure_still_answers():
+    from mostik_engine import crash_report
+
+    class Engine:
+        errors = []
+
+        def error(self, code, message, command_id=None):
+            self.errors.append((code, command_id))
+
+    def boom():
+        raise RuntimeError("x")
+
+    crash_report.answered(Engine(), 7, boom)()
+    assert Engine.errors == [("internal", 7)]
+
+
+def test_cloud_cli_choice(monkeypatch):
+    """Настройки → Текст: Claude, Codex или «сам». Вход в Claude истёк — можно перейти на Codex."""
+    monkeypatch.setattr(P, "find_claude", lambda env=None: "/opt/bin/claude")
+    monkeypatch.setattr(P, "find_codex", lambda env=None: "/opt/bin/codex")
+    signed = {"in": False}
+    monkeypatch.setattr(P.ClaudeCliBackend, "logged_in", lambda self, path: signed["in"])
+
+    auto = P.ClaudeCliBackend()
+    assert auto.path() == "/opt/bin/claude", "пока о входе ничего не известно — Claude"
+    status = auto.status()
+    assert status["available"] is True and status["using"] == "codex", "в Claude не вошли — «сам» берёт Codex"
+    assert status["found"] == {"claude": "login", "codex": "ok"}
+    assert auto.path() == "/opt/bin/codex"
+    assert auto.with_model("opus").path() == "/opt/bin/codex", "сводки встреч идут туда же"
+
+    claude = P.ClaudeCliBackend(cli="claude")
+    status = claude.status()
+    assert status["available"] is False and status["reason"] == "login", "выбран Claude — честно говорим «войдите»"
+    assert claude.path() == "/opt/bin/claude"
+
+    codex = P.ClaudeCliBackend(cli="codex")
+    status = codex.status()
+    assert status["available"] is True and status["using"] == "codex" and status["model"] == "codex"
+    assert status["found"]["claude"] == "ok", "выбран Codex — вход в Claude не проверяем и не ругаемся"
+
+    signed["in"] = True
+    assert auto.status()["using"] == "claude", "вошли в Claude — «сам» возвращается к нему"
+    assert P.ClaudeCliBackend(cli="вздор").cli == "auto"
+
+    monkeypatch.setattr(P, "find_codex", lambda env=None: None)
+    missing = P.ClaudeCliBackend(cli="codex").status()
+    assert missing["available"] is False and missing["reason"] == "not_found"
+    assert missing["found"] == {"claude": "ok", "codex": "missing"}
+
+
+def test_hello_sets_cloud_cli(monkeypatch):
+    from mostik_engine import server as S
+
+    monkeypatch.setattr(P, "find_claude", lambda env=None: None)
+    monkeypatch.setattr(P, "find_codex", lambda env=None: "/opt/bin/codex")
+    backend = P.ClaudeCliBackend()
+    replies = []
+
+    class Stub:
+        polishers = {"claude": backend}
+        reply = staticmethod(lambda _id, **fields: replies.append(fields))
+        verifier_allowed = staticmethod(lambda: False)
+        personal = type("Personal", (), {"path": __import__("pathlib").Path("/tmp/x/glossary.yaml")})()
+
+    S.Engine.cmd_hello(Stub(), {"id": 1, "polish_cli": "codex"})
+    assert backend.cli == "codex"  # выбор ставится сразу, ответ приходит из своего потока
+    deadline = __import__("time").monotonic() + 5
+    while not replies and __import__("time").monotonic() < deadline:
+        __import__("time").sleep(0.01)
+    assert replies[0]["polish"]["claude"]["using"] == "codex"

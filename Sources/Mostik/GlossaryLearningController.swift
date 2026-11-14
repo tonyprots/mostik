@@ -35,6 +35,15 @@ final class GlossaryLearningController {
         self.engine = engine
         let learning = model.glossaryLearning
         learning.onDecide = { [weak self] suggestion, accept in self?.decide(suggestion, accept: accept) }
+        learning.onDecideCustom = { [weak self] suggestion, canonical in self?.decideCustom(suggestion, canonical: canonical) }
+        learning.onEditSuggestion = { [weak self] suggestion in
+            guard let self else { return }
+            self.hidePrompt()
+            if !self.learning.suggestions.contains(suggestion) { self.learning.suggestions.insert(suggestion, at: 0) }
+            self.learning.editingSuggestionID = suggestion.id
+            self.model.selectedTab = .glossary
+            self.model.onOpenMainWindow()
+        }
         learning.onImport = { [weak self] source in self?.startImport(source) }
         learning.onApplyImport = { [weak self] in self?.applyImport() }
         learning.onCancelImport = { [weak self] in
@@ -116,6 +125,22 @@ final class GlossaryLearningController {
             guard let self else { return }
             if let rest = try? await self.engine().learnDecide(suggestion, accept: accept) { self.learning.suggestions = rest }
             if accept { await self.reloadGlossary() }
+        }
+    }
+
+    /// «Своё…»: предложенное написание отклонено, в словарь идёт введённое человеком.
+    private func decideCustom(_ suggestion: GlossarySuggestion, canonical: String) {
+        let typed = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return }
+        if typed == suggestion.canonical { return decide(suggestion, accept: true) }
+        if learning.prompt == suggestion { hidePrompt() }
+        learning.suggestions.removeAll { $0 == suggestion }
+        Task { [weak self] in
+            guard let self else { return }
+            let engine = self.engine()
+            if let rest = try? await engine.learnDecide(suggestion, accept: false) { self.learning.suggestions = rest }
+            try? await engine.remember(heard: suggestion.heard, canonical: typed)
+            await self.reloadGlossary()
         }
     }
 

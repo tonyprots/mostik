@@ -97,8 +97,9 @@ final class DeliveryController {
 
     /// Слово поправили в Mostik: исправленный текст записи ждёт, пока пользователь вернётся туда,
     /// куда вставляли. Не к последней вставке или текст тот же — ничего не делаем.
-    func queueFix(entryID: String, text: String) {
-        let fix = PendingTextFix(entryID: entryID, text: text)
+    func queueFix(entryID: String, text: String, summary: String? = nil, quiet: Bool = false) {
+        var fix = PendingTextFix(entryID: entryID, text: text)
+        fix.summary = summary; fix.quiet = quiet
         guard TextFixPlanner.applies(fix, to: last) else { return }
         pendingFix = fix
         AppLog.shared.event("delivery", "fix queued")
@@ -131,7 +132,7 @@ final class DeliveryController {
         case let .refuse(reason):
             pendingFix = nil
             AppLog.shared.event("delivery", "fix refused \(reason.rawValue)")
-            notice(refusalTitle(reason), t("Исправлено только в Mostik", "Fixed in Mostik only"))
+            if !fix.quiet { notice(refusalTitle(reason), t("Исправлено только в Mostik", "Fixed in Mostik only")) }
         case .replace:
             pendingFix = nil
             paster.undo()
@@ -141,7 +142,7 @@ final class DeliveryController {
                 // ⌘Z не сработал — текст как был. Сработал, но курсор не там — вернуть вставку.
                 if now?.value == record.before?.value { paster.redo() }
                 AppLog.shared.event("delivery", "fix undo mismatch")
-                notice(t("Текст не исправлен", "Text not fixed"), t("Исправлено только в Mostik", "Fixed in Mostik only"))
+                if !fix.quiet { notice(t("Текст не исправлен", "Text not fixed"), t("Исправлено только в Mostik", "Fixed in Mostik only")) }
                 return
             }
             let report = await deliver(text: fix.text, raw: record.rawText, entryID: record.entryID,
@@ -151,7 +152,7 @@ final class DeliveryController {
                 entry.pasteCheck = report.check?.rawValue
                 replaceEntry(entry)
             }
-            show(report, summary: t("Исправлено в тексте", "Fixed in the text"))
+            show(report, summary: fix.summary ?? t("Исправлено в тексте", "Fixed in the text"))
         }
     }
 
@@ -280,6 +281,14 @@ final class DeliveryController {
     }
 
     func notice(_ title: String, _ detail: String) {
+        // Идёт новая запись или распознавание: карточка прошлой диктовки не перебивает плашку —
+        // иначе через 3 с плашка пропадала при живой записи.
+        switch model.hud {
+        case .recording, .transcribing:
+            AppLog.shared.event("delivery", "notice skipped while busy")
+            return
+        default: break
+        }
         let phase = AppModel.HUDPhase.notice(title: title, detail: detail)
         model.hud = phase
         hide(phase, after: 3)

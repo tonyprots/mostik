@@ -398,7 +398,8 @@ struct VoiceMemorySettingsSection: View {
                            }))
             } else {
                 FormCollapsed(title: L("Узнавать собеседников по голосу", "Recognise people by voice"),
-                              reason: L("Нужна модель голоса: она ставится вместе с разделением по голосам.", "Needs the voice model; it comes with speaker separation."))
+                              reason: L("Нужна модель голоса: она ставится вместе с разделением по голосам.", "Needs the voice model; it comes with speaker separation."),
+                              action: L("Открыть модели", "Open models")) { model.openSettings(.modelsNeeded) }
             }
             if !speakers.status.people.isEmpty {
                 ForEach(speakers.status.people) { person in

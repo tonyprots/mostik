@@ -154,10 +154,21 @@ public enum PolishContext {
         if let value = source.value, !value.isEmpty {
             let units = Array(value.utf16)
             let caret = source.selection ?? CaretRange(location: units.count, length: 0)
-            let start = min(max(0, caret.location), units.count)
-            let end = min(units.count, start + max(0, caret.length))
-            let before = String(decoding: units[max(0, start - around * 2)..<start], as: UTF16.self)
-            let after = String(decoding: units[end..<min(units.count, end + around * 2)], as: UTF16.self)
+            // Смещения AX — в единицах UTF-16 и могут попасть внутрь суррогатной пары (эмодзи):
+            // границы сдвигаются на край пары, иначе в модель уходит U+FFFD.
+            func inPair(_ i: Int) -> Bool {
+                i > 0 && i < units.count && UTF16.isTrailSurrogate(units[i]) && UTF16.isLeadSurrogate(units[i - 1])
+            }
+            var start = min(max(0, caret.location), units.count)
+            if inPair(start) { start -= 1 }
+            var end = min(units.count, start + max(0, caret.length))
+            if inPair(end) { end += 1 }
+            var lower = max(0, start - around * 2)
+            if inPair(lower) { lower += 1 }
+            var upper = min(units.count, end + around * 2)
+            if inPair(upper) { upper -= 1 }
+            let before = String(decoding: units[lower..<start], as: UTF16.self)
+            let after = String(decoding: units[end..<upper], as: UTF16.self)
             let selection = String(decoding: units[start..<end], as: UTF16.self)
             out["before"] = String(before.suffix(around))
             out["after"] = String(after.prefix(around))

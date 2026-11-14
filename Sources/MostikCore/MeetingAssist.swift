@@ -137,13 +137,13 @@ public struct MeetingHint: Equatable, Sendable, Identifiable {
             self.init(id: id, question: question, answer: payload["answer"]?.stringValue,
                       snippet: payload["snippet"]?.stringValue ?? source["snippet"]?.stringValue,
                       kind: kind, title: source["title"]?.stringValue ?? "",
-                      path: source["path"]?.stringValue, line: source["line"]?.doubleValue.map { Int($0) },
+                      path: source["path"]?.stringValue, line: source["line"]?.intValue,
                       meeting: source["meeting"]?.stringValue, at: source["at"]?.doubleValue,
-                      turn: source["turn"]?.doubleValue.map { Int($0) },
+                      turn: source["turn"]?.intValue,
                       more: more + glossary.compactMap { Self.glossaryLabel($0) })
         } else if let first = glossary.first, let term = first["term"]?.stringValue {
             self.init(id: id, question: question, kind: .glossary, title: term, path: first["path"]?.stringValue,
-                      line: first["line"]?.doubleValue.map { Int($0) },
+                      line: first["line"]?.intValue,
                       more: glossary.dropFirst().compactMap { Self.glossaryLabel($0) })
         } else {
             return nil
@@ -153,7 +153,7 @@ public struct MeetingHint: Equatable, Sendable, Identifiable {
     private static func glossaryLabel(_ o: [String: JSONValue]) -> String? {
         guard let term = o["term"]?.stringValue else { return nil }
         let file = (o["path"]?.stringValue).map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
-        let line = o["line"]?.doubleValue.map { ":\(Int($0))" } ?? ""
+        let line = o["line"]?.intValue.map { ":\($0)" } ?? ""
         return file.isEmpty ? term : "\(term) — \(file)\(line)"
     }
 
@@ -254,7 +254,7 @@ public struct FrameDelta: Equatable, Sendable {
 
     /// Имя файла кадра — время от начала встречи: `001235.jpg` = 00:12:35.
     public static func fileName(at seconds: Double) -> String {
-        let total = max(0, Int(seconds))
+        let total = max(0, SafeInt.clamp(seconds))
         return String(format: "%02d%02d%02d.jpg", total / 3600, (total % 3600) / 60, total % 60)
     }
 

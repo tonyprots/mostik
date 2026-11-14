@@ -18,18 +18,43 @@ public enum MeetingFrameCapture {
     /// и включить там нечего.
     public static func openPermissionSettings() { Permissions.openScreenCapture() }
 
+    /// Окно звонка и как его искали — для журнала: «не снимается» без причины не разобрать (2026-10-21).
+    public struct WindowLookup: @unchecked Sendable {  // SCWindow — неизменяемый снимок
+        public var window: SCWindow?
+        /// Приложение с микрофоном (`MeetingDetector.pick`), nil — микрофон никто из ВКС не держит.
+        public var micApp: String?
+        /// По какому правилу нашли: `mic` — окно приложения с микрофоном, `fallback` — самое большое окно ВКС.
+        public var rule: String
+        public var candidates: Int
+    }
+
     /// Самое большое окно на экране у приложения звонка, которое сейчас держит микрофон.
-    public static func callWindow() async throws -> SCWindow? {
+    public static func callWindow() async throws -> SCWindow? { try await findCallWindow().window }
+
+    /// Сначала — окно приложения с микрофоном. Не нашлось (микрофон у вспомогательного процесса,
+    /// окно ВКС другого bundle id) — самое большое окно известного приложения ВКС на экране; браузер
+    /// в запасном пути не берём: его окно с микрофоном не обязательно звонок.
+    public static func findCallWindow() async throws -> WindowLookup {
         let apps = MeetingDetector.inputProcesses(excluding: getpid())
             .compactMap { MeetingDetector.displayName(forBundleID: $0.bundleID) }
-        guard let app = MeetingDetector.pick(apps) else { return nil }
+        let micApp = MeetingDetector.pick(apps)
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        let windows = content.windows.filter { window in
-            guard window.windowLayer == 0, window.frame.width >= 320, window.frame.height >= 200,
-                  let bundle = window.owningApplication?.bundleIdentifier else { return false }
-            return MeetingDetector.displayName(forBundleID: bundle) == app
+        let sized = content.windows.filter { $0.windowLayer == 0 && $0.frame.width >= 320 && $0.frame.height >= 200 }
+        func name(_ window: SCWindow) -> String? {
+            window.owningApplication.flatMap { MeetingDetector.displayName(forBundleID: $0.bundleIdentifier) }
         }
-        return windows.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        func largest(_ list: [SCWindow]) -> SCWindow? {
+            list.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        }
+        if let micApp {
+            let own = sized.filter { name($0) == micApp }
+            if let window = largest(own) {
+                return WindowLookup(window: window, micApp: micApp, rule: "mic", candidates: own.count)
+            }
+        }
+        let browserNames = Set(MeetingDetector.browsers.map(\.name))
+        let calls = sized.filter { name($0).map { !browserNames.contains($0) } ?? false }
+        return WindowLookup(window: largest(calls), micApp: micApp, rule: "fallback", candidates: calls.count)
     }
 
     /// Снимок одного окна, не шире `maxWidth` пикселей, без курсора.

@@ -129,11 +129,17 @@ def _en_month(word: str) -> int | None:
 
 # --- разбор -----------------------------------------------------------------------
 
-_RU_WD = r"(понедельник\w*|вторник\w*|сред\w*|четверг\w*|пятниц\w*|суббот\w*|воскресень\w*|пн|вт|ср|чт|пт|сб|вс)\.?"
-_EN_WD = (r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|"
-          r"sat|sun)\.?")
+# «сред\w*» ловило «средства» и «среди», «dec\w*» — «decision»: только формы самого слова.
+_RU_WD_FULL = (r"понедельник\w*|вторник\w*|сред(?:а|ы|у|е|ой|ам)|четверг\w*|пятниц\w*|суббот\w*|"
+               r"воскресень\w*")
+_RU_WD_SHORT = r"пн|вт|ср|чт|пт|сб|вс"
+_RU_WD = r"(" + _RU_WD_FULL + r"|" + _RU_WD_SHORT + r")\.?"
+_EN_WD_FULL = r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+_EN_WD_SHORT = r"mon|tues|tue|wed|thurs|thur|thu|fri|sat|sun"
+_EN_WD = r"(" + _EN_WD_FULL + r"|" + _EN_WD_SHORT + r")\.?"
 _RU_MONTH = r"(январ\w*|феврал\w*|март\w*|апрел\w*|ма[йяе]|июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)"
-_EN_MONTH = r"(jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\.?"
+_EN_MONTH = (r"(january|february|march|april|may|june|july|august|september|october|november|december|"
+             r"jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)(?![\w])\.?")
 _B = r"(?<![\w])"
 _E = r"(?![\w])"
 
@@ -156,7 +162,8 @@ def parse_due(text: Any, base: _dt.date | _dt.datetime | str | None = None) -> d
         except ValueError:
             base = None
     if isinstance(base, _dt.datetime):
-        base = base.date()
+        # Метка с поясом («…Z») — это момент; день встречи считаем по местным часам.
+        base = (base.astimezone() if base.tzinfo else base).date()
     base = base or _dt.date.today()
     source = " ".join(text.replace("ё", "е").replace("Ё", "Е").split())
     low = source.lower()
@@ -167,14 +174,19 @@ def parse_due(text: Any, base: _dt.date | _dt.datetime | str | None = None) -> d
         day = _calendar_date(base, int(match.group(3)), int(match.group(2)), int(match.group(1)))
         if day:
             return _result(day, "date", match.group(0))
-    english = not re.search(r"[а-я]", low)
-    match = re.search(_B + r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?" + _E, low)
+    # Месяц первым — только «11/15» в тексте с латинскими словами. «5.11» через точку и голые
+    # цифры — день первым. Не сошлось как дата — пробуем другой порядок.
+    english = bool(re.search(r"[a-z]", low)) and not re.search(r"[а-я]", low)
+    match = re.search(_B + r"(\d{1,2})([./])(\d{1,2})(?:[./](\d{2,4}))?" + _E, low)
     if match:
-        first, second = int(match.group(1)), int(match.group(2))
-        day_n, month_n = (second, first) if english else (first, second)
-        day = _calendar_date(base, day_n, month_n, int(match.group(3)) if match.group(3) else None)
-        if day:
-            return _result(day, "date", match.group(0))
+        first, second = int(match.group(1)), int(match.group(3))
+        year = int(match.group(4)) if match.group(4) else None
+        month_first = english and match.group(2) == "/"
+        orders = [(second, first), (first, second)] if month_first else [(first, second), (second, first)]
+        for day_n, month_n in orders:
+            day = _calendar_date(base, day_n, month_n, year)
+            if day:
+                return _result(day, "date", match.group(0))
 
     # «15 ноября», «15-го ноября», 15 November, Nov 15(th).
     match = re.search(_B + r"(\d{1,2})(?:-?го)?\s+" + _RU_MONTH + r"(?:\s+(\d{4}))?" + _E, low)
@@ -259,12 +271,18 @@ def parse_due(text: Any, base: _dt.date | _dt.datetime | str | None = None) -> d
         index = _weekday_index(match.group(1), _EN_WEEKDAYS)
         if index is not None:
             return _result(_week_start(base) + _dt.timedelta(days=7 + index), "weekday", match.group(0))
-    match = re.search(_B + r"(?:(?:до|к|ко|в|во|на|по)\s+)?(?:эт\w+\s+)?" + _RU_WD + _E, low)
+    # Сокращение («ср», sat, sun, wed) — только с предлогом или когда срок из него одного:
+    # иначе «he sat down» и «ср. значение» становятся днями недели.
+    match = (re.search(_B + r"(?:(?:до|к|ко|в|во|на|по)\s+)?(?:эт\w+\s+)?(" + _RU_WD_FULL + r")" + _E, low)
+             or re.search(_B + r"(?:до|к|ко|в|во|на|по)\s+(?:эт\w+\s+)?(" + _RU_WD_SHORT + r")\.?" + _E, low)
+             or re.fullmatch(r"(" + _RU_WD_SHORT + r")\.?", low.strip()))
     if match:
         index = _weekday_index(match.group(1), _RU_WEEKDAYS)
         if index is not None:
             return _result(_next_weekday(base, index), "weekday", match.group(0))
-    match = re.search(_B + r"(?:(?:by|on|until|till|before|this)\s+)?" + _EN_WD + _E, low)
+    match = (re.search(_B + r"(?:(?:by|on|until|till|before|this)\s+)?(" + _EN_WD_FULL + r")" + _E, low)
+             or re.search(_B + r"(?:by|on|until|till|before|this)\s+(" + _EN_WD_SHORT + r")\.?" + _E, low)
+             or re.fullmatch(r"(" + _EN_WD_SHORT + r")\.?", low.strip()))
     if match:
         index = _weekday_index(match.group(1), _EN_WEEKDAYS)
         if index is not None:

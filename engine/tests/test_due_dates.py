@@ -101,3 +101,20 @@ def test_base_from_iso_string():
 
 def test_invalid_calendar_date_is_none():
     assert parse_due("до 31.02", WED) is None
+
+
+@pytest.mark.parametrize("text", [
+    "когда появятся средства", "среди прочего", "3 decision points", "he sat down", "the sun is out",
+])
+def test_lookalike_words_are_not_dates(text):
+    assert parse_due(text, dt.date(2026, 11, 14)) is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("5.11", "2027-11-05"),          # через точку — день первым, даже без кириллицы
+    ("11/15 deadline", "2026-11-15"),  # по-английски месяц первым
+    ("15/11", "2026-11-15"),          # месяц 15 невозможен — другой порядок
+    ("пт", "2026-11-20"), ("к ср", "2026-11-18"), ("by fri", "2026-11-20"), ("Dec 3", "2026-12-03"),
+])
+def test_numeric_and_short_forms(text, expected):
+    assert due_date(text, dt.date(2026, 11, 14)) == expected

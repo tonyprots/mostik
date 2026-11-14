@@ -255,7 +255,7 @@ final class PolishExtrasController {
             let field = FocusedField.snapshot()
             if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == done.bundleID,
                StreamInsert.canReplace(field: field, inserted: done.typed),
-               paster.selectBackward(done.typed.utf16.count) {
+               paster.selectBackward(done.typed.count) {  // ⇧← шагает по символам, не по UTF-16
                 try? await Task.sleep(nanoseconds: 80_000_000)
                 let outcome = await paster.insert(text: final, expectedBundleID: done.bundleID)
                 return DeliveryReport(outcome: outcome, check: nil, before: nil, after: nil, sent: final)

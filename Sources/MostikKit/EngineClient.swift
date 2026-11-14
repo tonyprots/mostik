@@ -48,12 +48,29 @@ public final class EngineClient: @unchecked Sendable {
     }
 
     /// События без ожидающего: partial, progress, meeting_done, error, «чужой» final.
-    public var onEvent: ((EngineEvent) -> Void)?
-    public var onStatus: ((Status) -> Void)?
+    /// Колбэки ставит главный поток, зовут фоновые (чтение stdout, завершение процесса): доступ под замком.
+    public var onEvent: ((EngineEvent) -> Void)? {
+        get { lock.withLock { eventHandler } }
+        set { lock.withLock { eventHandler = newValue } }
+    }
+    /// Статусы приходят по одному и в порядке переходов: «работает» не обгонит «упал» того же процесса.
+    public var onStatus: ((Status) -> Void)? {
+        get { lock.withLock { statusHandler } }
+        set { lock.withLock { statusHandler = newValue } }
+    }
+    /// Последний статус клиента (до первого запуска — `stopped`).
+    public var status: Status { lock.withLock { lastStatus } }
 
-    public let config: Config
+    /// Конфигурация запуска. Меняется только до запуска (`reconfigure`): читать под замком нельзя.
+    public var config: Config { configLock.withLock { storedConfig } }
+    private let configLock = NSLock()
+    private var storedConfig: Config
     private let lock = NSLock()
     private let writeQueue = DispatchQueue(label: "mostik.engine.write")
+    private let statusQueue = DispatchQueue(label: "mostik.engine.status")
+    private var eventHandler: ((EngineEvent) -> Void)?
+    private var statusHandler: ((Status) -> Void)?
+    private var lastStatus: Status = .stopped
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var logHandle: FileHandle?
@@ -63,15 +80,22 @@ public final class EngineClient: @unchecked Sendable {
     private var replyWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
     private struct FinalWaiter { let id: Int; let isFile: Bool; let cont: CheckedContinuation<DictationResult, Error> }
     private var finalWaiters: [String: FinalWaiter] = [:]
-    private var shuttingDown = false
-    private var restartAttempt = 0
+    /// Кто вправе запускать процесс: явный запуск, отложенный перезапуск и остановка решаются одним шагом (S6).
+    private var supervisor = EngineSupervisor(maxRapid: EngineClient.maxRapidRestarts)
+    /// Команды с ответом, пришедшие, пока процесса нет, но он будет (S7).
+    private var outbox = EngineOutbox()
+    /// Строки правок словаря, ждущих ответа: умер процесс — уходят новому, один раз.
+    private var resendable: [Int: String] = [:]
+    private var resent: Set<Int> = []
     private var launchedAt = Date()
     /// Сколько падений подряд (каждое — меньше минуты после запуска) терпим до статуса `failed`.
-    static let maxRapidRestarts = 6
+    static let maxRapidRestarts = EngineRecovery.maxRapid
     static let logRotation = LogRotation(maxBytes: 2_000_000, keep: 3)
+    /// Проверка: вызывается в запуске перед самим стартом процесса — окно, в которое попадала остановка.
+    @_spi(Testing) public var willRun: (() -> Void)?
 
     public init(config: Config) {
-        self.config = config
+        self.storedConfig = config
         signal(SIGPIPE, SIG_IGN)
     }
 
@@ -79,26 +103,62 @@ public final class EngineClient: @unchecked Sendable {
 
     // MARK: процесс
 
+    /// Запуск. Процесс уже поднимается или работает — ничего не делает: второй Python не нужен.
     public func start() throws {
-        lock.lock()
-        shuttingDown = false
-        lock.unlock()
-        try launch()
+        guard let ticket = lock.withLock({ supervisor.claimStart() }) else { return }
+        try launch(ticket)
     }
 
-    private func launch() throws {
+    /// Запуск будет чуть позже (перезапуск ждёт, пока остановится прежний процесс): команды с ответом,
+    /// пришедшие до него, не получают «движок не запущен», а уходят первыми после запуска.
+    public func expectStart() {
+        lock.withLock { supervisor.expectStart() }
+    }
+
+    /// Настройки сменились, пока новый клиент ждал остановки старого процесса: запуск пойдёт с ними.
+    /// Работающему или поднимающемуся клиенту конфигурацию не меняем — false.
+    @discardableResult
+    public func reconfigure(_ config: Config) -> Bool {
+        lock.withLock {
+            guard supervisor.phase == .idle || supervisor.phase == .pending else { return false }
+            configLock.withLock { storedConfig = config }
+            return true
+        }
+    }
+
+    /// Статус — под замком, в порядке переходов; до получателя доходит по одному.
+    private func emitLocked(_ status: Status) {
+        lastStatus = status
+        statusQueue.async { [weak self] in
+            guard let self, let handler = self.lock.withLock({ self.statusHandler }) else { return }
+            handler(status)
+        }
+    }
+
+    /// Запуск не состоялся: статус, отказ придержанным командам, исключение.
+    private func failLaunch(_ ticket: Int, _ message: String) throws -> Never {
+        lock.lock()
+        var held: [() -> Void] = []
+        if supervisor.mayRun(ticket) {
+            supervisor.launchFailed(ticket)
+            emitLocked(.failed(message))
+            held = takeHeldLocked(EngineError.notRunning)
+        }
+        lock.unlock()
+        held.forEach { $0() }
+        throw EngineError.launch(message)
+    }
+
+    private func launch(_ ticket: Int) throws {
         let fm = FileManager.default
+        let config = self.config
         guard fm.isExecutableFile(atPath: config.python) else {
-            let message = L("Python не найден: \(config.python)", "Python not found: \(config.python)")
-            onStatus?(.failed(message))
-            throw EngineError.launch(message)
+            try failLaunch(ticket, L("Python не найден: \(config.python)", "Python not found: \(config.python)"))
         }
         guard fm.fileExists(atPath: config.engineDir.appendingPathComponent("mostik_engine").path) else {
-            let message = L("Движок не найден: \(config.engineDir.path)", "Engine not found: \(config.engineDir.path)")
-            onStatus?(.failed(message))
-            throw EngineError.launch(message)
+            try failLaunch(ticket, L("Движок не найден: \(config.engineDir.path)", "Engine not found: \(config.engineDir.path)"))
         }
-        onStatus?(.starting)
+        lock.withLock { if supervisor.mayRun(ticket) { emitLocked(.starting) } }
         openLog()
 
         let proc = Process()
@@ -126,23 +186,38 @@ public final class EngineClient: @unchecked Sendable {
             self?.receiveStderr(data)
         }
         proc.terminationHandler = { [weak self] p in self?.terminated(p) }
+        willRun?()
 
-        do { try proc.run() } catch {
-            let message = L("Не удалось запустить движок: \(error.localizedDescription)", "Couldn’t start the engine: \(error.localizedDescription)")
-            onStatus?(.failed(message))
-            throw EngineError.launch(message)
-        }
-        // Диктовка — nice 5 (§5): движок не мешает переднему приложению.
-        setpriority(PRIO_PROCESS, id_t(proc.processIdentifier), config.nice)
-
+        // Проверка билета, запуск и запись процесса — под одним замком. Остановка, пришедшая, пока запуск
+        // готовился, гасит билет, и процесс не поднимается; пришедшая позже — видит процесс и останавливает
+        // его. Мгновенная смерть тоже ждёт замка: `terminated` узнаёт процесс (S8).
         lock.lock()
+        guard supervisor.mayRun(ticket) else {
+            lock.unlock()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            return
+        }
+        do { try proc.run() } catch {
+            lock.unlock()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            try failLaunch(ticket, L("Не удалось запустить движок: \(error.localizedDescription)",
+                                     "Couldn’t start the engine: \(error.localizedDescription)"))
+        }
         process = proc
-        stdinHandle = inPipe.fileHandleForWriting
+        let stdin = inPipe.fileHandleForWriting
+        stdinHandle = stdin
         stdoutBuffer.removeAll()
         stderrBuffer.removeAll()
         launchedAt = Date()
+        supervisor.launched(ticket)
+        // Диктовка — nice 5 (§5): движок не мешает переднему приложению.
+        setpriority(PRIO_PROCESS, id_t(proc.processIdentifier), config.nice)
+        // Придержанные команды — первыми, в порядке поступления.
+        for line in outbox.drain() { writeLocked(line.text, to: stdin) }
+        emitLocked(.running)
         lock.unlock()
-        onStatus?(.running)
     }
 
     private func openLog() {
@@ -162,36 +237,55 @@ public final class EngineClient: @unchecked Sendable {
         guard proc === process else { lock.unlock(); return }
         process = nil
         stdinHandle = nil
-        let replies = replyWaiters; replyWaiters.removeAll()
+        let exit = supervisor.exited(uptime: Date().timeIntervalSince(launchedAt))
+        var replies = replyWaiters; replyWaiters.removeAll()
         let finals = finalWaiters; finalWaiters.removeAll()
-        let restart = !shuttingDown
-        if Date().timeIntervalSince(launchedAt) > 60 { restartAttempt = 0 }
-        restartAttempt += 1
-        let attempt = restartAttempt
+        // Правка словаря, оставшаяся без ответа, уходит новому процессу — один раз.
+        if case .restart = exit {
+            for id in replies.keys.sorted() {
+                guard let line = resendable[id], !resent.contains(id), outbox.hold(id: id, line: line) else { continue }
+                resent.insert(id)
+                replyWaiters[id] = replies.removeValue(forKey: id)
+            }
+        }
+        for id in replies.keys { resendable[id] = nil; resent.remove(id) }
         let line = "[mostik] engine exited with status \(proc.terminationStatus)\n"
         try? logHandle?.write(contentsOf: Data(line.utf8))
+        switch exit {
+        case .stopped: emitLocked(.stopped)
+        case .restart(let attempt, let delay, _): emitLocked(.restarting(attempt: attempt, delay: delay))
+        case .giveUp:
+            // Падает сразу после запуска раз за разом (сломанное окружение Python) — не
+            // перезапускаем бесконечно: каждые 30 с новый Python ест CPU и батарею.
+            emitLocked(.failed(L("Движок падает при запуске (код \(proc.terminationStatus)), см. ~/Library/Logs/Mostik/engine.log",
+                                 "Engine keeps crashing on start (code \(proc.terminationStatus)), see ~/Library/Logs/Mostik/engine.log")))
+        }
         lock.unlock()
         // Нативное падение (сигнал) — отчёт с хвостом журнала: там дамп faulthandler.
         // Исключение Python движок описывает сам (`MOSTIK_CRASH_DIR`).
-        if restart, proc.terminationReason == .uncaughtSignal { writeSignalReport(status: proc.terminationStatus, pid: proc.processIdentifier) }
+        if exit != .stopped, proc.terminationReason == .uncaughtSignal { writeSignalReport(status: proc.terminationStatus, pid: proc.processIdentifier) }
 
         replies.values.forEach { $0.resume(throwing: EngineError.crashed) }
         finals.values.forEach { $0.cont.resume(throwing: EngineError.crashed) }
 
-        guard restart else { onStatus?(.stopped); return }
-        // Падает сразу после запуска раз за разом (сломанное окружение Python) — не
-        // перезапускаем бесконечно: каждые 30 с новый Python ест CPU и батарею.
-        guard attempt <= Self.maxRapidRestarts else {
-            onStatus?(.failed(L("Движок падает при запуске (код \(proc.terminationStatus)), см. ~/Library/Logs/Mostik/engine.log",
-                                 "Engine keeps crashing on start (code \(proc.terminationStatus)), see ~/Library/Logs/Mostik/engine.log")))
-            return
-        }
-        let delay = min(30, pow(2, Double(attempt - 1)))
-        onStatus?(.restarting(attempt: attempt, delay: delay))
+        guard case .restart(_, let delay, let pending) = exit else { return }
         DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            let stop = self.lock.withLock { self.shuttingDown || self.process != nil }
-            if !stop { try? self.launch() }
+            // Билет гаснет, если за паузу клиента остановили или запустили заново.
+            guard let self, let ticket = self.lock.withLock({ self.supervisor.claimRestart(pending) }) else { return }
+            try? self.launch(ticket)
+        }
+    }
+
+    /// Придержанные команды, которым процесса уже не дождаться: снять ожидающих (под замком),
+    /// ответить им — после замка.
+    private func takeHeldLocked(_ error: Error) -> [() -> Void] {
+        outbox.drain().compactMap { line -> (() -> Void)? in
+            resendable[line.id] = nil
+            resent.remove(line.id)
+            if let waiter = replyWaiters.removeValue(forKey: line.id) { return { waiter.resume(throwing: error) } }
+            if let key = finalWaiters.first(where: { $0.value.id == line.id })?.key,
+               let waiter = finalWaiters.removeValue(forKey: key) { return { waiter.cont.resume(throwing: error) } }
+            return nil
         }
     }
 
@@ -219,9 +313,11 @@ public final class EngineClient: @unchecked Sendable {
     /// Мягкая остановка: `shutdown`, через 2 с — terminate.
     public func shutdown() {
         lock.lock()
-        shuttingDown = true
+        supervisor.shutdown()
         let proc = process
+        let held = takeHeldLocked(EngineError.notRunning)
         lock.unlock()
+        held.forEach { $0() }
         guard let proc else { return }
         send("shutdown")
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
@@ -240,6 +336,13 @@ public final class EngineClient: @unchecked Sendable {
             // Перезапуск ждёт выхода старого процесса: два Python с моделями — двойная память.
             let hard = Date().addingTimeInterval(1)
             while proc.isRunning, Date() < hard { usleep(50_000) }
+            // Зависший процесс SIGTERM не слышит (остановлен, застрял в нативном коде): без SIGKILL он
+            // остался бы жить рядом с новым.
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                let last = Date().addingTimeInterval(1)
+                while proc.isRunning, Date() < last { usleep(20_000) }
+            }
         }
     }
 
@@ -279,7 +382,7 @@ public final class EngineClient: @unchecked Sendable {
     private func dispatch(_ event: EngineEvent) {
         switch event {
         case .reply(let id, let ok, let payload):
-            guard let waiter = lock.withLock({ replyWaiters.removeValue(forKey: id) }) else {
+            guard let waiter = takeReplyWaiter(id) else {
                 // Ответ на команду без ожидания (stop, transcribe_file, meeting) — ошибкой считаем только ok:false.
                 if !ok, !failFinal(id: id, error: Self.error(from: payload)) { onEvent?(event) }
                 return
@@ -293,10 +396,10 @@ public final class EngineClient: @unchecked Sendable {
             }
         case .error(let id, let session, let code, let message):
             let error = EngineError.engine(code: code, message: message)
-            if let id, let waiter = lock.withLock({ replyWaiters.removeValue(forKey: id) }) {
+            if let id, let waiter = takeReplyWaiter(id) {
                 waiter.resume(throwing: error); return
             }
-            if let session, let waiter = lock.withLock({ finalWaiters.removeValue(forKey: session) }) {
+            if let session, let waiter = takeFinalWaiter(session: session) {
                 waiter.cont.resume(throwing: error); return
             }
             if let id, failFinal(id: id, error: error) { return }
@@ -310,13 +413,18 @@ public final class EngineClient: @unchecked Sendable {
     /// Подбирать «самый старый transcribe_file» нельзя: опоздавший `final` диктовки после
     /// таймаута `stop` попал бы в чужое «распознать заново» и перезаписал другую запись истории.
     private func takeFinalWaiter(session: String) -> FinalWaiter? {
-        lock.withLock { finalWaiters.removeValue(forKey: session) }
+        lock.withLock {
+            guard let waiter = finalWaiters.removeValue(forKey: session) else { return nil }
+            outbox.drop(id: waiter.id)
+            return waiter
+        }
     }
 
     @discardableResult
     private func failFinal(id: Int, error: Error) -> Bool {
         let waiter: FinalWaiter? = lock.withLock {
             guard let key = finalWaiters.first(where: { $0.value.id == id })?.key else { return nil }
+            outbox.drop(id: id)
             return finalWaiters.removeValue(forKey: key)
         }
         waiter?.cont.resume(throwing: error)
@@ -331,15 +439,32 @@ public final class EngineClient: @unchecked Sendable {
 
     private func allocateID() -> Int { lock.withLock { defer { nextID += 1 }; return nextID } }
 
+    /// Ожидающий ответа по `id` — вместе с его записями о повторе.
+    private func takeReplyWaiter(_ id: Int) -> CheckedContinuation<[String: JSONValue], Error>? {
+        lock.withLock {
+            resendable[id] = nil
+            resent.remove(id)
+            outbox.drop(id: id)
+            return replyWaiters.removeValue(forKey: id)
+        }
+    }
+
     /// Запись строки в stdin — через последовательную очередь, чтобы не держать замок на блокирующей записи.
-    private func write(_ line: String) -> Bool {
-        guard let handle = lock.withLock({ stdinHandle }) else { return false }
+    /// Постановка в очередь — под замком: порядок строк тот же, что порядок команд.
+    private func writeLocked(_ line: String, to handle: FileHandle) {
         writeQueue.async { [weak self] in
             do { try handle.write(contentsOf: Data((line + "\n").utf8)) } catch {
                 self?.log("[mostik] stdin write failed: \(error)")
             }
         }
-        return true
+    }
+
+    private func write(_ line: String) -> Bool {
+        lock.withLock {
+            guard let handle = stdinHandle else { return false }
+            writeLocked(line, to: handle)
+            return true
+        }
     }
 
     // MARK: команды
@@ -375,41 +500,53 @@ public final class EngineClient: @unchecked Sendable {
     }
 
     /// Команда с ответом `{ok, ...}`; ok:false и `error` с тем же id — исключение.
-    public func request(_ cmd: String, fields: [String: JSONValue] = [:], timeout: TimeInterval = 30) async throws -> [String: JSONValue] {
+    /// Процесса нет, но он вот-вот будет (перезапуск, пауза после падения) — команда ждёт запуска в
+    /// пределах своего таймаута, а не получает «движок не запущен» (S7).
+    /// `hold: false` — для проверки связи (`hello`): ей нужен ответ именно этого процесса.
+    public func request(_ cmd: String, fields: [String: JSONValue] = [:], timeout: TimeInterval = 30,
+                        hold: Bool = true) async throws -> [String: JSONValue] {
         let id = allocateID()
+        let line = Self.encode(cmd, id: id, fields: fields)
         return try await withCheckedThrowingContinuation { cont in
             lock.lock()
-            guard stdinHandle != nil else { lock.unlock(); cont.resume(throwing: EngineError.notRunning); return }
-            replyWaiters[id] = cont
-            lock.unlock()
-            if !write(Self.encode(cmd, id: id, fields: fields)) {
-                if let w = lock.withLock({ replyWaiters.removeValue(forKey: id) }) { w.resume(throwing: EngineError.notRunning) }
+            if let handle = stdinHandle {
+                writeLocked(line, to: handle)
+            } else if !(hold && supervisor.holdsCommands && outbox.hold(id: id, line: line)) {
+                lock.unlock()
+                cont.resume(throwing: EngineError.notRunning)
                 return
             }
+            replyWaiters[id] = cont
+            if EngineOutbox.resendable.contains(cmd) { resendable[id] = line }
+            lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                guard let self, let w = self.lock.withLock({ self.replyWaiters.removeValue(forKey: id) }) else { return }
+                guard let self, let w = self.takeReplyWaiter(id) else { return }
                 w.resume(throwing: EngineError.timeout(cmd))
             }
         }
     }
 
-    /// Команда, итог которой — событие `final` с `session`.
+    /// Команда, итог которой — событие `final` с `session`. Распознавание файла ждёт запуска так же, как
+    /// команда с ответом; `stop` — нет: без процесса сессии нет, диктовку спасает распознавание записи.
     private func awaitFinal(_ cmd: String, session: String, isFile: Bool, fields: [String: JSONValue],
                             timeout: TimeInterval) async throws -> DictationResult {
         let id = allocateID()
+        var all = fields
+        all["session"] = .string(session)
+        let line = Self.encode(cmd, id: id, fields: all)
         return try await withCheckedThrowingContinuation { cont in
             lock.lock()
-            guard stdinHandle != nil else { lock.unlock(); cont.resume(throwing: EngineError.notRunning); return }
-            finalWaiters[session] = FinalWaiter(id: id, isFile: isFile, cont: cont)
-            lock.unlock()
-            var all = fields
-            all["session"] = .string(session)
-            if !write(Self.encode(cmd, id: id, fields: all)) {
-                if let w = lock.withLock({ finalWaiters.removeValue(forKey: session) }) { w.cont.resume(throwing: EngineError.notRunning) }
+            if let handle = stdinHandle {
+                writeLocked(line, to: handle)
+            } else if !(isFile && supervisor.holdsCommands && outbox.hold(id: id, line: line)) {
+                lock.unlock()
+                cont.resume(throwing: EngineError.notRunning)
                 return
             }
+            finalWaiters[session] = FinalWaiter(id: id, isFile: isFile, cont: cont)
+            lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                guard let self, let w = self.lock.withLock({ self.finalWaiters.removeValue(forKey: session) }) else { return }
+                guard let self, let w = self.takeFinalWaiter(session: session) else { return }
                 w.cont.resume(throwing: EngineError.timeout(cmd))
             }
         }
@@ -417,7 +554,10 @@ public final class EngineClient: @unchecked Sendable {
 
     // MARK: диктовка
 
-    public func hello() async throws -> [String: JSONValue] { try await request("hello", timeout: 30) }
+    /// `polishCLI` — выбор из Настроек («auto», «claude», «codex»): движок отвечает уже о нём.
+    public func hello(polishCLI: String? = nil) async throws -> [String: JSONValue] {
+        try await request("hello", fields: polishCLI.map { ["polish_cli": .string($0)] } ?? [:], timeout: 30, hold: false)
+    }
 
     /// `polishBackend` — локальная LLM, которую поднять заранее (`WarmupPolicy.polishBackendToWarm`, шаг 1, п. 7).
     public func warmup(language: String, polishBackend: String? = nil) async throws -> [String: JSONValue] {
@@ -452,6 +592,7 @@ public final class EngineClient: @unchecked Sendable {
             object["translate"] = .object(["to": .string(translate.to), "tone": .string(translate.tone.rawValue)])
         }
         if polish.stream { object["stream"] = .bool(true) }
+        if polish.late { object["late"] = .bool(true) }
         return .object(object)
     }
 
@@ -484,7 +625,7 @@ public final class EngineClient: @unchecked Sendable {
     }
 
     public func cancel(session: String) {
-        if let w = lock.withLock({ finalWaiters.removeValue(forKey: session) }) {
+        if let w = takeFinalWaiter(session: session) {
             w.cont.resume(throwing: CancellationError())
         }
         send("cancel", fields: ["session": .string(session)])

@@ -21,6 +21,7 @@ from audio_transcription.glossary import (  # noqa: E402
     MIN_PHONETIC_LETTERS,
     VERIFIER_CANONICAL_KINDS,
     GlossaryEntry,
+    replace_at,
     take_verifier_canonicals,
 )
 from audio_transcription.models import Correction, Hypothesis, ReviewItem, Segment  # noqa: E402
@@ -204,7 +205,12 @@ def _proper_noun(item: ReviewItem) -> bool:
     verifier = capitals(item.verifier_span, item.comparison_text)
     if not verifier:
         return False
-    primary = {normalize_text(word) for word in capitals(item.primary_span, item.readable_text)}
+    written = capitals(item.primary_span, item.readable_text)
+    if len(item.primary_span.split()) > 1 and len(written) >= len(verifier):
+        # Основная уже написала имена на этом месте («Лиссабон, Оренбург» против «Лиссабонс, Арендук»):
+        # проверяющая спорит о форме, а не находит имя. Одно слово («Сазонова» / «Созонова») — вопрос.
+        return False
+    primary = {normalize_text(word) for word in written}
     return any(normalize_text(word) not in primary for word in verifier)
 
 
@@ -239,6 +245,12 @@ def _same_numbers(left: str, right: str) -> bool:
 # Сдвиг пары около 0,5 («минут. Потом» → «на ветку ореху. Про Dashboard») отсекает
 # второе условие: длина сторон расходится больше чем на `LATIN_EXTRA_WORDS` слова.
 SOUND_SIMILARITY = 0.5
+SAME_SCRIPT_SIMILARITY = 0.7
+
+
+def _cyrillic_only(text: str) -> bool:
+    return bool(_HAS_CYRILLIC.search(text)) and not _LATIN_LETTER_ANY.search(text)
+
 def sounds_alike(left: str, right: str) -> float:
     """Фонетическое сходство двух кусков (лучшее по вариантам чтения), 0…1."""
     best = 0.0
@@ -280,6 +292,39 @@ def _trim(text: str) -> str:
     return text.strip().strip(_EDGE_PUNCTUATION).strip()
 
 
+# Междометия, которых нет в списке слов-паразитов: «Мммм...», «Ээ», «Хмм».
+_INTERJECTION = re.compile(r"(?:м{2,}|э{2,}|а{2,}|х+м+)")
+
+
+def _filler_word(word: str) -> bool:
+    bare = normalize_text(word)
+    return not bare or not without_fillers(bare) or bool(_INTERJECTION.fullmatch(bare))
+
+
+def _strip_fillers(span: str) -> str:
+    """Слова-паразиты на краях фрагмента — не часть спора: «Мммм... JP Norton» → «JP Norton»,
+    «Сноумен. Угу» → «Сноумен.». Середина не трогается: услышанное должно найтись в тексте как есть."""
+    words = span.split()
+    while words and _filler_word(words[0]):
+        words.pop(0)
+    while words and _filler_word(words[-1]):
+        words.pop()
+    return " ".join(words)
+
+
+def _same_word(left: str, right: str) -> bool:
+    """Одно слово в разных формах: «Итерациях» и «Миграция» — общая основа, разные окончания."""
+    a, b = normalize_text(left), normalize_text(right)
+    if not a or not b or " " in a or " " in b:
+        return False
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    return common >= 4 and common >= max(len(a), len(b)) - 2
+
+
 def classify(item: ReviewItem, terms: TermIndex) -> tuple[str, TermHit | None] | None:
     """Вид сомнения или None, если расхождение не на термине.
 
@@ -305,11 +350,15 @@ def classify(item: ReviewItem, terms: TermIndex) -> tuple[str, TermHit | None] |
         if primary_hit is not None and hit.canonical == primary_hit.canonical:
             # Тот же термин нашёлся и у основной: у неё известен кусок, заменяем только его.
             hit = primary_hit
-        if (
-            hit.source == "project"
-            and _HAS_CYRILLIC.search(hit.piece if hit is primary_hit else item.primary_span)
+        russian_heard = (
+            _HAS_CYRILLIC.search(hit.piece if hit is primary_hit else item.primary_span)
             and not _HAS_CYRILLIC.search(hit.canonical)
-            and (hit.plain or not _LATIN_OR_DIGIT.search(item.verifier_span))
+        )
+        if russian_heard and (
+            (hit.source == "project" and (hit.plain or not _LATIN_OR_DIGIT.search(item.verifier_span)))
+            # Личный словарь — только похожее на слух, а не алиас: «ноушн» Антон завёл сам,
+            # «продукте» → product совпало по звучанию, а обе модели слышали русское слово.
+            or (hit.source == "personal" and hit.score < 1.0 and not _LATIN_OR_DIGIT.search(item.verifier_span))
         ):
             # Основная написала русское слово, термин проекта — латиницей. Обе модели слышали русское
             # («истории» → History) или термин — обычное английское слово («видео» → video):
@@ -365,6 +414,14 @@ def select_doubts(
     ranked: list[tuple[tuple, Doubt]] = []
     seen: set[tuple[str, str]] = set()
     for item in items:
+        primary_span, verifier_span = _strip_fillers(item.primary_span), _strip_fillers(item.verifier_span)
+        if not _trim(primary_span) or not _trim(verifier_span):
+            # Пустое услышанное заменять нечем (вставка проверяющей), пустой вариант — не вопрос.
+            continue
+        if not _without_numbers(primary_span) and not _without_numbers(verifier_span):
+            # Число против числа («шестидесятый» → «шести тысяч»): решает правило чисел, не словарь.
+            continue
+        item = replace(item, primary_span=primary_span, verifier_span=verifier_span)
         verdict = classify(item, terms)
         if verdict is None:
             continue
@@ -382,6 +439,16 @@ def select_doubts(
             elif normalize_text(hit.canonical) != normalize_text(heard):
                 suggestion = hit.canonical
         if not suggestion or normalize_text(suggestion) == normalize_text(heard):
+            continue
+        if hit is not None and not hit.piece and sounds_alike(heard, hit.canonical) < (
+            SAME_SCRIPT_SIMILARITY if _cyrillic_only(heard) and _cyrillic_only(hit.canonical) else SOUND_SIMILARITY
+        ):
+            # Термин только у проверяющей, а на слух не похож («История» → «Искра»): пара сдвинута.
+            # Кириллица против кириллицы сравнивается без транслита — и порог выше: «клон» → Claude
+            # даёт 0,5 через транслит, «История» → «Искра» — 0,57 напрямую.
+            continue
+        if kind == "proper" and _plain_phrase(heard):
+            # Заглавная у служебного слова («но» → «На») — не имя.
             continue
         piece_hit = hit is not None and bool(_trim(hit.piece)) and heard == _trim(hit.piece)
         if piece_hit:
@@ -404,7 +471,7 @@ def select_doubts(
                 heard_rest, suggestion_rest = _without_numbers(heard), _without_numbers(suggestion)
                 # Число с обеих сторон («Тринадцатый нормально» → «13 нормальный») — спор о числе.
                 both_numbers = heard_rest != _trim_words(heard) and suggestion_rest != _trim_words(suggestion)
-                if not heard_rest or not suggestion_rest or both_numbers:
+                if not heard_rest or not suggestion_rest or both_numbers or _same_word(heard_rest, suggestion_rest):
                     continue
                 similarity = sounds_alike(heard_rest, suggestion_rest)
             else:
@@ -432,7 +499,14 @@ def select_doubts(
         factor = SOURCE_FACTOR.get(kind, 1)
         ranked.append(((-factor, -item.weight, item.similarity, item.start), doubt))
     ranked.sort(key=lambda pair: pair[0])
-    return [doubt for _, doubt in ranked[: max(0, limit)]], len(ranked)
+    # Один вариант — один вопрос на диктовку: «JP Norton» в двух местах решается одним ответом.
+    unique: list[Doubt] = []
+    asked: set[str] = set()
+    for _, doubt in ranked:
+        if normalize_text(doubt.suggestion) not in asked:
+            asked.add(normalize_text(doubt.suggestion))
+            unique.append(doubt)
+    return unique[: max(0, limit)], len(unique)
 
 
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
@@ -443,6 +517,28 @@ LATIN_EXTRA_WORDS = 2
 
 def _english_only(span: str) -> bool:
     return bool(_LATIN_LETTER.search(span)) and not _CYRILLIC.search(span)
+
+
+# Что Whisper дописывает в тишину по-английски: в текст это не подставляется никогда.
+_ENGLISH_ARTIFACTS = re.compile(r"thanks? (?:you )?for watching|subscribe|subtitles by|amara org")
+
+
+def _trusted_english(heard: str, written: str) -> bool:
+    """Проверяющей можно верить: она слышала то же место и написала обычные английские слова.
+
+    Без сходства на слух подставлялось чужое: «Slack» → «Jira», «release candidate» →
+    «Thanks for watching». Имена и термины («Cubernetes» вместо «Kubernetes»), как и то же
+    слово, записанное иначе («GitHub» → «Git Hub»), остаются сомнением, а не автозаменой.
+    """
+    if sounds_alike(heard, written) < SOUND_SIMILARITY:
+        return False
+    if "".join(normalize_text(heard).split()) == "".join(normalize_text(written).split()):
+        return False
+    if _ENGLISH_ARTIFACTS.search(normalize_text(written)):
+        return False
+    known = set(normalize_text(heard).split())
+    return all(word in known or is_natural_word(word) or is_plain_english(word)
+               for word in normalize_text(written).split())
 
 
 def take_verifier_latin(
@@ -460,7 +556,8 @@ def take_verifier_latin(
     taken: list[Correction] = []
     kept: list[ReviewItem] = []
     for item in items:
-        heard, written = item.primary_span.strip(), item.verifier_span.strip()
+        # Знаки по краям — запись проверяющей, а не сказанное: меняются слова, знак остаётся основной.
+        heard, written = _trim(item.primary_span), _trim(item.verifier_span)
         words, other = len(heard.split()), len(written.split())
         index = None
         if (
@@ -469,6 +566,7 @@ def take_verifier_latin(
             and words <= MAX_SPAN_WORDS and 0 < other <= words + LATIN_EXTRA_WORDS
             and normalize_text(heard) != normalize_text(written)
             and (not len(terms) or terms.match(heard) is None)
+            and _trusted_english(heard, written)
         ):
             pattern = rf"(?<!\w){re.escape(heard)}(?!\w)"
             index = next((i for i, segment in enumerate(segments)
@@ -476,7 +574,7 @@ def take_verifier_latin(
         if index is None:
             kept.append(item)
             continue
-        texts[index] = re.sub(pattern, lambda _: written, texts[index], count=1)
+        texts[index] = replace_at(pattern, written, texts[index], segments[index], item.start)
         taken.append(Correction(start=segments[index].start, end=segments[index].end, before=heard,
                                 after=written, canonical=written, rule="verifier_latin", automatic=True))
         kept.append(replace(item, kind="verifier_latin"))

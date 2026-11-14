@@ -12,6 +12,7 @@
     → {"window_id": "s1:3", "session": "s1", "pcm": "<b64 int16>", "language": "ru",
        "hotwords": [...]}          или "wav": путь вместо "pcm"
     → {"cancel": "s1"}             выбросить ещё не начатые окна сессии
+    → {..., "urgent": true}        окно основной модели и определение языка — впереди пачек проверки
     ← {"ready": true, "seconds": 2.1}   или {"ready": false, "error": "..."}
     ← {"window_id": "s1:3", "text": "...", "words": [...], "seconds": 0.4}
 
@@ -131,6 +132,11 @@ def _transcribe(model: Any, request: dict, *, hint: str = "phrase") -> dict:
         verbose=None,
     )
     text = str(getattr(answer, "text", "") or "").strip()
+    if "initial_prompt" in prompt_kwargs:
+        from .whisper_hint import is_prompt_echo
+
+        if is_prompt_echo(text, language):
+            text = ""  # на тишине Whisper возвращает фразу-образец из подсказки: её никто не говорил
     return {
         "window_id": request["window_id"],
         "text": text,
@@ -156,6 +162,18 @@ def _detect(model: Any, request: dict) -> dict:
     allowed = [str(code) for code in request.get("detect") or []]
     picked = {code: round(float(probs.get(code, 0.0)), 4) for code in allowed} if allowed else {}
     return {"window_id": request["window_id"], "probs": picked, "seconds": round(time.monotonic() - started, 3)}
+
+
+def enqueue(queue: "collections.deque[dict]", request: dict) -> None:
+    """Срочное (окно основной модели, определение языка) — впереди пачек проверки, но после
+    других срочных: человек ждёт текст, а проверка успеет."""
+    if not request.get("urgent"):
+        queue.append(request)
+        return
+    at = 0
+    while at < len(queue) and queue[at].get("urgent"):
+        at += 1
+    queue.insert(at, request)
 
 
 def worker_main() -> int:
@@ -202,7 +220,7 @@ def worker_main() -> int:
                 elif request.get("shutdown"):
                     break
                 else:
-                    queue.append(request)
+                    enqueue(queue, request)
                 ready.notify()
         closed.set()
         with ready:
@@ -230,6 +248,11 @@ class VerifierClient:
 
     Процесс поднимается при первой нужде и гасится после 3 минут простоя
     (`sweep`) — это и есть выгрузка модели: память MLX уходит вместе с ним.
+
+    Один процесс Whisper служит трём ролям: проверяющая русского, определение языка и основная
+    модель английского (`models.RemoteRecognizer`). Ответы основной идут своему получателю по
+    префиксу `window_id` (`route`); пока она загружена в пуле, процесс закреплён (`pin`) —
+    ни простой, ни `VerifierRouter.stop` его не гасят.
     """
 
     def __init__(
@@ -248,8 +271,11 @@ class VerifierClient:
         self._lock = threading.RLock()
         self._process: subprocess.Popen | None = None
         self._ready = threading.Event()
+        self._ready_at: float | None = None
         self._failed: str | None = None
         self._pending: set[str] = set()
+        self._routes: dict[str, Callable[[dict], None]] = {}
+        self._pins: set[str] = set()
         self._used = time.monotonic()
         self.enabled = True
         # Цена одного вызова (с), скользящее среднее по ответам: прогноз «успеет ли» на stop.
@@ -263,6 +289,33 @@ class VerifierClient:
     def failure(self) -> str | None:
         return self._failed
 
+    def route(self, prefix: str, callback: Callable[[dict], None]) -> None:
+        """Ответы на окна с `window_id`, начинающимся с `prefix`, — этому получателю, а не `on_result`."""
+        self._routes[prefix] = callback
+
+    def pin(self, owner: str) -> None:
+        with self._lock:
+            self._pins.add(owner)
+
+    def unpin(self, owner: str) -> None:
+        with self._lock:
+            self._pins.discard(owner)
+            self._used = time.monotonic()  # простой считается с этого момента
+
+    @property
+    def pinned(self) -> bool:
+        with self._lock:
+            return bool(self._pins)
+
+    def status(self) -> tuple[str, float | None]:
+        """(`loading` — процесс поднят, модель ещё грузится | `ready` | `dead` — процесса нет или
+        он не смог; когда стал готов, monotonic)."""
+        with self._lock:
+            alive = self._process is not None and self._process.poll() is None
+        if not alive or self._failed is not None:
+            return "dead", None
+        return ("ready", self._ready_at) if self._ready.is_set() else ("loading", None)
+
     def ensure(self) -> bool:
         """Запускает процесс, если его нет. Не ждёт загрузки модели."""
         if not self.available:
@@ -275,6 +328,7 @@ class VerifierClient:
             env.setdefault("HF_HUB_OFFLINE", "1")
             env["MOSTIK_WORKER_MODEL"] = self.model
             self._ready.clear()
+            self._ready_at = None
             self._pending.clear()
             self._process = subprocess.Popen(
                 isolation.module_command(self.python, "mostik_engine.verifier_worker", engine_dir),
@@ -306,6 +360,7 @@ class VerifierClient:
             if "ready" in message:
                 if message["ready"]:
                     _log(f"{self.model} загружен за {message.get('seconds')} с")
+                    self._ready_at = time.monotonic()
                     self._ready.set()
                 else:
                     self._failed = str(message.get("error") or "unknown")
@@ -316,8 +371,11 @@ class VerifierClient:
                 self._pending.discard(str(message.get("window_id")))
                 self._used = time.monotonic()
                 self._learn_cost(message)
-            if self.on_result:
-                self.on_result(message)
+            window_id = str(message.get("window_id"))
+            target = next((callback for prefix, callback in self._routes.items() if window_id.startswith(prefix)),
+                          self.on_result)
+            if target:
+                target(message)
         with self._lock:
             if self._process is process:
                 self._process = None
@@ -325,8 +383,9 @@ class VerifierClient:
         self._ready.set()
 
     def _learn_cost(self, message: dict) -> None:
-        if str(message.get("window_id", "")).endswith(":detect"):
-            return  # определение языка — другой вызов, другая цена
+        window_id = str(message.get("window_id", ""))
+        if window_id.endswith(":detect") or any(window_id.startswith(prefix) for prefix in self._routes):
+            return  # определение языка и окно основной модели — другие вызовы, другая цена
         try:
             seconds = float(message.get("seconds") or 0.0)
         except (TypeError, ValueError):
@@ -342,6 +401,8 @@ class VerifierClient:
         pcm16: bytes,
         language: str,
         hotwords: list[str] | None = None,
+        *,
+        urgent: bool = False,
     ) -> bool:
         if not self.ensure():
             return False
@@ -351,6 +412,7 @@ class VerifierClient:
             "pcm": base64.b64encode(pcm16).decode("ascii"),
             "language": language,
             "hotwords": hotwords or [],
+            **({"urgent": True} if urgent else {}),
         }
         return self._write(request, window_id)
 
@@ -363,6 +425,7 @@ class VerifierClient:
             "session": session,
             "pcm": base64.b64encode(pcm16).decode("ascii"),
             "detect": list(languages),
+            "urgent": True,  # первое окно ждёт язык: не в хвост очереди пачек
         }
         return self._write(request, window_id)
 
@@ -370,6 +433,10 @@ class VerifierClient:
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 self._write({"cancel": session})
+            # Воркер выбрасывает очередь сессии молча, ответов на эти окна не будет: без чистки
+            # они висели в `_pending` вечно, и `sweep` больше не выгружал модель.
+            prefix = f"{session}:"
+            self._pending = {window_id for window_id in self._pending if not window_id.startswith(prefix)}
 
     def _write(self, payload: dict, window_id: str | None = None) -> bool:
         with self._lock:
@@ -408,7 +475,8 @@ class VerifierClient:
     def sweep(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         with self._lock:
-            idle = self._process is not None and not self._pending and now - self._used > self.idle_s
+            idle = (self._process is not None and not self._pending and not self._pins
+                    and now - self._used > self.idle_s)
         if idle:
             self.stop()
         return idle
@@ -444,9 +512,12 @@ class VerifierRouter:
     def running(self) -> bool:
         return any(client.running() for client in self.clients.values())
 
-    def stop(self) -> None:
+    def stop(self, *, force: bool = False) -> None:
+        """Гасит проверяющих. Процесс, который держит и основная модель пула (`pin`), остаётся:
+        иначе окно английской диктовки осталось бы без ответа. `force` — выход из движка."""
         for client in self.clients.values():
-            client.stop()
+            if force or not client.pinned:
+                client.stop()
 
     def sweep(self, now: float | None = None) -> bool:
         return any([client.sweep(now) for client in self.clients.values()])

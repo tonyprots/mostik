@@ -22,6 +22,11 @@ public enum ICS {
     /// Предел разворота одной серии: защита от правила без конца и от злого сервера.
     static let maxOccurrences = 3000
     static let maxIterations = 20_000
+    /// Пределы разбора чужого ICS (П10): INTERVAL без потолка переполнял `step * interval`,
+    /// длинные списки BYDAY и ATTENDEE давали квадратичную работу.
+    static let maxInterval = 1000
+    static let maxRuleList = 64
+    static let maxAttendees = 500
 
     // MARK: строки и свойства
 
@@ -147,16 +152,61 @@ public enum ICS {
         return DateValue(date: value, allDay: false, timeZone: zone)
     }
 
-    /// Olson-имя как есть; `/mozilla.org/.../Europe/Moscow` — по хвосту; пара частых Windows-имён.
+    /// Windows-имена поясов (Exchange, Outlook) → Olson, по CLDR `windowsZones`: частые в рабочих календарях.
+    static let windowsZones: [String: String] = [
+        "UTC": "UTC", "GMT Standard Time": "Europe/London", "Greenwich Standard Time": "Atlantic/Reykjavik",
+        "W. Europe Standard Time": "Europe/Berlin", "Central Europe Standard Time": "Europe/Budapest",
+        "Central European Standard Time": "Europe/Warsaw", "Romance Standard Time": "Europe/Paris",
+        "E. Europe Standard Time": "Europe/Chisinau", "FLE Standard Time": "Europe/Kiev",
+        "GTB Standard Time": "Europe/Bucharest", "Turkey Standard Time": "Europe/Istanbul",
+        "Israel Standard Time": "Asia/Jerusalem", "Belarus Standard Time": "Europe/Minsk",
+        "Kaliningrad Standard Time": "Europe/Kaliningrad", "Russian Standard Time": "Europe/Moscow",
+        "Russia Time Zone 3": "Europe/Samara", "Ekaterinburg Standard Time": "Asia/Yekaterinburg",
+        "N. Central Asia Standard Time": "Asia/Novosibirsk", "North Asia Standard Time": "Asia/Krasnoyarsk",
+        "North Asia East Standard Time": "Asia/Irkutsk", "Yakutsk Standard Time": "Asia/Yakutsk",
+        "Vladivostok Standard Time": "Asia/Vladivostok", "Arabian Standard Time": "Asia/Dubai",
+        "Arab Standard Time": "Asia/Riyadh", "Caucasus Standard Time": "Asia/Yerevan",
+        "Georgian Standard Time": "Asia/Tbilisi", "Azerbaijan Standard Time": "Asia/Baku",
+        "West Asia Standard Time": "Asia/Tashkent", "India Standard Time": "Asia/Kolkata",
+        "SE Asia Standard Time": "Asia/Bangkok", "China Standard Time": "Asia/Shanghai",
+        "Singapore Standard Time": "Asia/Singapore", "Tokyo Standard Time": "Asia/Tokyo",
+        "Korea Standard Time": "Asia/Seoul", "AUS Eastern Standard Time": "Australia/Sydney",
+        "New Zealand Standard Time": "Pacific/Auckland", "Hawaiian Standard Time": "Pacific/Honolulu",
+        "Alaskan Standard Time": "America/Anchorage", "Pacific Standard Time": "America/Los_Angeles",
+        "Mountain Standard Time": "America/Denver", "Central Standard Time": "America/Chicago",
+        "Eastern Standard Time": "America/New_York", "Atlantic Standard Time": "America/Halifax",
+        "E. South America Standard Time": "America/Sao_Paulo", "Argentina Standard Time": "America/Buenos_Aires",
+        "South Africa Standard Time": "Africa/Johannesburg", "Egypt Standard Time": "Africa/Cairo",
+    ]
+
+    /// Olson-имя как есть; `/mozilla.org/.../America/Argentina/Buenos_Aires` — по хвосту из трёх, двух
+    /// или одной части; Windows-имена; `(UTC+03:00) Moscow…` — по смещению (без летнего времени).
     static func timeZone(_ tzid: String) -> TimeZone? {
         let id = tzid.trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
         if let tz = TimeZone(identifier: id) { return tz }
         let parts = id.split(separator: "/")
-        if parts.count >= 2, let tz = TimeZone(identifier: parts.suffix(2).joined(separator: "/")) { return tz }
-        let windows = ["Russian Standard Time": "Europe/Moscow", "UTC": "UTC", "GMT Standard Time": "Europe/London",
-                       "W. Europe Standard Time": "Europe/Berlin", "Pacific Standard Time": "America/Los_Angeles",
-                       "Eastern Standard Time": "America/New_York", "Central European Standard Time": "Europe/Warsaw"]
-        return windows[id].flatMap(TimeZone.init(identifier:))
+        if parts.count >= 2 {
+            for n in [3, 2, 1] where parts.count > n {
+                if let tz = TimeZone(identifier: parts.suffix(n).joined(separator: "/")) { return tz }
+            }
+        }
+        if let tz = windowsZones[id].flatMap(TimeZone.init(identifier:)) { return tz }
+        return utcOffsetZone(id)
+    }
+
+    /// `(UTC+03:00) Moscow, St. Petersburg`, `GMT-0500` → пояс с этим смещением.
+    static func utcOffsetZone(_ id: String) -> TimeZone? {
+        var s = Substring(id.uppercased())
+        if s.hasPrefix("(") { s = s.dropFirst() }
+        guard s.hasPrefix("UTC") || s.hasPrefix("GMT") else { return nil }
+        s = s.dropFirst(3)
+        guard let sign = s.first, sign == "+" || sign == "-" else { return nil }
+        let digits = s.dropFirst().prefix { $0.isNumber || $0 == ":" }.filter(\.isNumber)
+        guard (1...4).contains(digits.count) else { return nil }
+        let hours = Int(digits.count <= 2 ? digits : String(digits.dropLast(2))) ?? 0
+        let minutes = digits.count <= 2 ? 0 : (Int(digits.suffix(2)) ?? 0)
+        guard hours <= 14, minutes < 60 else { return nil }
+        return TimeZone(secondsFromGMT: (sign == "-" ? -1 : 1) * (hours * 3600 + minutes * 60))
     }
 
     /// `PT1H30M`, `P1D`, `-PT15M` → секунды.
@@ -210,20 +260,36 @@ public enum ICS {
             guard let start = master.first("DTSTART").flatMap({ date($0, fallback: fallback) }), !start.allDay else { continue }
             let length = eventLength(master, start: start, fallback: fallback)
             let uid = master.first("UID")?.value ?? UUID().uuidString
-            let starts: [Date]
+            var starts: [Date]
+            // RDATE — дополнительные даты серии; бывает и без RRULE.
+            let extra = master.all("RDATE").flatMap { p in
+                p.value.split(separator: ",").compactMap { date(String($0), tzid: p.params["TZID"], isDate: false, fallback: fallback)?.date }
+            }
             if let rule = master.first("RRULE").flatMap({ RRule($0.value, fallback: fallback) }) {
-                let excluded = Set(master.all("EXDATE").flatMap { p in
-                    p.value.split(separator: ",").compactMap {
-                        date(String($0), tzid: p.params["TZID"], isDate: p.params["VALUE"]?.uppercased() == "DATE", fallback: fallback)?.date
+                var excluded: Set<Date> = []
+                // EXDATE датой без времени (VALUE=DATE) снимает экземпляр этого дня в поясе серии.
+                var excludedDays: Set<Date> = []
+                var dayCal = Calendar(identifier: .gregorian)
+                dayCal.timeZone = start.timeZone
+                for p in master.all("EXDATE") {
+                    for raw in p.value.split(separator: ",") {
+                        guard let d = date(String(raw), tzid: p.params["TZID"], isDate: p.params["VALUE"]?.uppercased() == "DATE",
+                                           fallback: fallback) else { continue }
+                        if d.allDay, let day = date(String(raw), tzid: nil, isDate: true, fallback: start.timeZone) {
+                            excludedDays.insert(day.date)
+                        } else {
+                            excluded.insert(d.date)
+                        }
                     }
-                })
-                let extra = master.all("RDATE").flatMap { p in
-                    p.value.split(separator: ",").compactMap { date(String($0), tzid: p.params["TZID"], isDate: false, fallback: fallback)?.date }
                 }
                 starts = (rule.occurrences(start: start, from: from.addingTimeInterval(-length), until: to) + extra)
-                    .filter { !excluded.contains($0) }
+                    .filter { !excluded.contains($0) && !excludedDays.contains(dayCal.startOfDay(for: $0)) }
             } else {
-                starts = [start.date]
+                starts = [start.date] + extra
+            }
+            if !extra.isEmpty {
+                var seen: Set<Date> = []
+                starts = starts.filter { seen.insert($0).inserted }.sorted()
             }
             for s in starts {
                 if let o = overrides[uid]?[s] {
@@ -267,7 +333,7 @@ public enum ICS {
         var all: [String] = []
         var others: [String] = []
         var emails: [String] = []
-        var people = e.all("ATTENDEE")
+        var people = Array(e.all("ATTENDEE").prefix(maxAttendees))
         if let org = e.first("ORGANIZER"), !people.contains(where: { $0.value.lowercased() == org.value.lowercased() }) {
             people.insert(org, at: 0)
         }
@@ -298,7 +364,7 @@ public enum ICS {
 }
 
 /// Правило повтора RFC 5545 — то, что встречается в рабочих календарях: DAILY, WEEKLY с BYDAY,
-/// MONTHLY по числу или «второй вторник», YEARLY; INTERVAL, COUNT, UNTIL, BYMONTH, BYSETPOS не поддержан.
+/// MONTHLY по числу или «второй вторник», YEARLY; INTERVAL, COUNT, UNTIL, BYMONTH, BYSETPOS, WKST.
 public struct RRule: Equatable, Sendable {
     public enum Freq: String, Sendable { case daily = "DAILY", weekly = "WEEKLY", monthly = "MONTHLY", yearly = "YEARLY" }
 
@@ -310,11 +376,18 @@ public struct RRule: Equatable, Sendable {
     public var byDay: [(weekday: Int, ordinal: Int?)] = []
     public var byMonthDay: [Int] = []
     public var byMonth: [Int] = []
+    /// BYSETPOS: какие по счёту кандидаты периода остаются (`-1` — последний: «последний рабочий день месяца»).
+    public var bySetPos: [Int] = []
+    /// WKST — с какого дня считается неделя (1 = вс … 7 = сб); важно для WEEKLY с INTERVAL > 1.
+    public var weekStart = 2
+    /// UNTIL датой без времени (`20261105`): последний день серии входит целиком, в поясе DTSTART.
+    var untilDay: String?
 
     public static func == (a: RRule, b: RRule) -> Bool {
         a.freq == b.freq && a.interval == b.interval && a.count == b.count && a.until == b.until
             && a.byDay.map { "\($0.weekday)/\($0.ordinal ?? 0)" } == b.byDay.map { "\($0.weekday)/\($0.ordinal ?? 0)" }
             && a.byMonthDay == b.byMonthDay && a.byMonth == b.byMonth
+            && a.bySetPos == b.bySetPos && a.weekStart == b.weekStart && a.untilDay == b.untilDay
     }
 
     static let weekdays = ["SU": 1, "MO": 2, "TU": 3, "WE": 4, "TH": 5, "FR": 6, "SA": 7]
@@ -327,16 +400,21 @@ public struct RRule: Equatable, Sendable {
         }
         guard let f = fields["FREQ"].flatMap({ Freq(rawValue: $0.uppercased()) }) else { return nil }
         freq = f
-        interval = max(1, Int(fields["INTERVAL"] ?? "") ?? 1)
+        interval = min(ICS.maxInterval, max(1, Int(fields["INTERVAL"] ?? "") ?? 1))
         count = fields["COUNT"].flatMap(Int.init)
-        if let u = fields["UNTIL"] { until = ICS.date(u, tzid: nil, isDate: false, fallback: fallback)?.date }
-        for d in (fields["BYDAY"] ?? "").split(separator: ",") {
+        if let u = fields["UNTIL"], let parsed = ICS.date(u, tzid: nil, isDate: false, fallback: fallback) {
+            until = parsed.date
+            if parsed.allDay { untilDay = u.trimmingCharacters(in: .whitespaces) }
+        }
+        if let wd = fields["WKST"].flatMap({ Self.weekdays[$0.uppercased()] }) { weekStart = wd }
+        for d in (fields["BYDAY"] ?? "").split(separator: ",").prefix(ICS.maxRuleList) {
             let s = String(d).uppercased()
             guard s.count >= 2, let wd = Self.weekdays[String(s.suffix(2))] else { continue }
             byDay.append((wd, Int(s.dropLast(2))))
         }
-        byMonthDay = (fields["BYMONTHDAY"] ?? "").split(separator: ",").compactMap { Int($0) }
-        byMonth = (fields["BYMONTH"] ?? "").split(separator: ",").compactMap { Int($0) }
+        byMonthDay = (fields["BYMONTHDAY"] ?? "").split(separator: ",").prefix(ICS.maxRuleList).compactMap { Int($0) }
+        byMonth = (fields["BYMONTH"] ?? "").split(separator: ",").prefix(ICS.maxRuleList).compactMap { Int($0) }
+        bySetPos = (fields["BYSETPOS"] ?? "").split(separator: ",").prefix(ICS.maxRuleList).compactMap { Int($0) }
     }
 
     /// Начала экземпляров от DTSTART до `until` (включительно), в часовом поясе DTSTART: перевод часов
@@ -345,7 +423,10 @@ public struct RRule: Equatable, Sendable {
     public func occurrences(start: ICS.DateValue, from: Date = .distantPast, until limit: Date) -> [Date] {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = start.timeZone
-        let end = min(limit, until ?? limit)
+        // UNTIL датой — до конца этого дня в поясе серии, а не до его полуночи.
+        let untilEnd = untilDay.flatMap { ICS.date($0, tzid: nil, isDate: true, fallback: start.timeZone)?.date }
+            .flatMap { cal.date(byAdding: .day, value: 1, to: $0)?.addingTimeInterval(-1) } ?? until
+        let end = min(limit, untilEnd ?? limit)
         let time = cal.dateComponents([.hour, .minute, .second], from: start.date)
         func at(_ day: Date) -> Date? {
             cal.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: time.second ?? 0, of: day)
@@ -366,7 +447,8 @@ public struct RRule: Equatable, Sendable {
         var step = 0
         while step < ICS.maxIterations {
             defer { step += 1 }
-            let n = step * interval
+            let (n, overflow) = step.multipliedReportingOverflow(by: interval)
+            if overflow { return out }
             var candidates: [Date] = []
             switch freq {
             case .daily:
@@ -376,11 +458,12 @@ public struct RRule: Equatable, Sendable {
                     candidates = [at(day)].compactMap { $0 }
                 }
             case .weekly:
-                // Неделя с понедельника (WKST=MO по умолчанию у календарей; RFC — тоже MO).
-                guard let weekStart = cal.date(byAdding: .weekOfYear, value: n, to: mondayOf(startDay, cal)) else { return out }
+                // Неделя с WKST: по умолчанию понедельник (RFC и календари); при INTERVAL > 1 от него
+                // зависит, какие дни попадают в одну неделю.
+                guard let first = cal.date(byAdding: .weekOfYear, value: n, to: weekStartOf(startDay, cal)) else { return out }
                 let days = byDay.isEmpty ? [cal.component(.weekday, from: start.date)] : byDay.map(\.weekday)
                 candidates = days.compactMap { wd in
-                    cal.date(byAdding: .day, value: (wd + 5) % 7, to: weekStart).flatMap(at)
+                    cal.date(byAdding: .day, value: (wd - weekStart + 7) % 7, to: first).flatMap(at)
                 }
             case .monthly:
                 guard let month = cal.date(byAdding: .month, value: n, to: firstOfMonth(startDay, cal)) else { return out }
@@ -396,6 +479,14 @@ public struct RRule: Equatable, Sendable {
                     candidates += daysIn(month: first, cal: cal, defaultDay: cal.component(.day, from: start.date)).compactMap(at)
                 }
             }
+            // BYSETPOS: из отсортированных кандидатов периода остаются только названные по счёту.
+            if !bySetPos.isEmpty, freq != .daily {
+                let sorted = Array(Set(candidates)).sorted()
+                candidates = bySetPos.compactMap { pos in
+                    let idx = pos > 0 ? pos - 1 : sorted.count + pos
+                    return sorted.indices.contains(idx) ? sorted[idx] : nil
+                }
+            }
             if !take(candidates) { return out }
             // Период целиком за пределом окна — дальше только позже.
             if let last = candidates.max(), last > end { return out }
@@ -408,9 +499,9 @@ public struct RRule: Equatable, Sendable {
         switch freq { case .daily: .day; case .weekly: .weekOfYear; case .monthly: .month; case .yearly: .year }
     }
 
-    private func mondayOf(_ day: Date, _ cal: Calendar) -> Date {
+    private func weekStartOf(_ day: Date, _ cal: Calendar) -> Date {
         let wd = cal.component(.weekday, from: day)  // 1 = вс
-        return cal.date(byAdding: .day, value: -((wd + 5) % 7), to: day) ?? day
+        return cal.date(byAdding: .day, value: -((wd - weekStart + 7) % 7), to: day) ?? day
     }
 
     private func firstOfMonth(_ day: Date, _ cal: Calendar) -> Date {

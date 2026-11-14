@@ -4,7 +4,7 @@ import Foundation
 // разбор ответов `archive_*` движка и расписание брифа и недельной сводки.
 // Сами карточки, бриф и сводки собирает движок (`engine/mostik_engine/archive.py`).
 
-private func int(_ value: JSONValue?) -> Int { Int(value?.doubleValue ?? 0) }
+private func int(_ value: JSONValue?) -> Int { value?.intValue ?? 0 }
 private func items(_ value: JSONValue?) -> [JSONValue] {
     if case .array(let list)? = value { return list }
     return []

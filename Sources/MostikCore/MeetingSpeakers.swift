@@ -201,7 +201,7 @@ public struct VoiceMemoryStatus: Equatable, Sendable {
         if case let .array(items)? = reply["people"] {
             status.people = items.compactMap { item in
                 guard case let .object(o) = item, let id = o["id"]?.stringValue, let name = o["name"]?.stringValue else { return nil }
-                return VoicePerson(id: id, name: name, samples: Int(o["samples"]?.doubleValue ?? 0),
+                return VoicePerson(id: id, name: name, samples: o["samples"]?.intValue ?? 0,
                                    seconds: o["seconds"]?.doubleValue ?? 0)
             }
         }

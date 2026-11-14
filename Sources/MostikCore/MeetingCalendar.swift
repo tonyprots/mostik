@@ -138,6 +138,8 @@ public struct MeetingAutoStop: Equatable, Sendable {
     public private(set) var deadline: Double?
     public private(set) var cancelled = false
     private var sawCall = false
+    /// Событие уже кончилось на первом тике этой записи; nil — тиков ещё не было.
+    private var lateStart: Bool?
 
     public init() {}
 
@@ -152,7 +154,11 @@ public struct MeetingAutoStop: Equatable, Sendable {
         if let deadline {
             return now >= deadline ? .stop : .none
         }
-        let eventOver = eventEnd.map { now >= $0 } ?? false
+        var eventOver = eventEnd.map { now >= $0 } ?? false
+        // Запись начали уже после конца события (оно ещё считается текущим): по его концу не останавливаем,
+        // иначе отсчёт стартует в первую же секунду записи.
+        if lateStart == nil { lateStart = eventEnd.map { now > $0 } ?? false }
+        if lateStart == true { eventOver = false }
         let callOver = sawCall && !callActive
         // Звонок закрылся — встреча кончилась: останавливаем сразу, без минуты ожидания (решение автора).
         if callOver { return .stop }
@@ -197,6 +203,64 @@ public struct CallSuggestion: Equatable, Sendable {
     public func suggestion(at t: Double, recording: Bool, enabled: Bool) -> String? {
         guard enabled, !recording, let app, let since, app != dismissed, t - since >= Self.delay else { return nil }
         return app
+    }
+}
+
+/// Конспект Телемоста (2026-11-09, Антон): если он включён, Mostik не предлагает записать встречу.
+/// Признак — кнопка `…ControlPanelWidget.centralWidget.aiButton` в окне звонка: выключенный конспект —
+/// круглая иконка без подписи («Start the AI summary»), идущий — с подписью («Summarizing...»)
+/// и описанием «Stop creating summary». Снято с дерева Телемоста 3.3 на встречах октября.
+public enum TelemostSummary {
+    public static let buttonSuffix = ".aiButton"
+
+    /// nil — по кнопке не понять; true — конспект идёт.
+    public static func isOn(title: String?, description: String?) -> Bool? {
+        let desc = (description ?? "").lowercased()
+        if ["stop", "останов", "выключ", "заверш"].contains(where: desc.contains) { return true }
+        if ["start", "запуст", "включ", "начать"].contains(where: desc.contains) { return false }
+        if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        return nil
+    }
+
+    /// Ссылка события ведёт в Телемост.
+    public static func isTelemostLink(_ link: String?) -> Bool {
+        guard let link, let host = URL(string: link.lowercased())?.host else { return false }
+        return host.split(separator: ".").contains("telemost")
+    }
+
+    /// Предлагать ли запись в звонке Телемоста. Одного взгляда на кнопку мало: в лобби её ещё нет,
+    /// а конспект, включённый по умолчанию, стартует через несколько секунд после входа — раньше
+    /// предложение успевало появиться и уже не уходило.
+    public struct Gate: Equatable, Sendable {
+        /// Конспект выключен столько секунд подряд — значит, сам уже не включится.
+        public static let settle: TimeInterval = 12
+        /// Кнопку так и не нашли (нет доступа, другой интерфейс) — предлагаем, как для любого звонка.
+        public static let blind: TimeInterval = 30
+        /// Как часто смотреть на кнопку.
+        public static let interval: TimeInterval = 3
+
+        public enum Decision: Equatable, Sendable { case wait, show, skip }
+        private var firstAt: Double?
+        private var offSince: Double?
+
+        public init() {}
+
+        /// `probe` — `isOn`: true — конспект идёт, false — выключен, nil — кнопки не видно.
+        public mutating func feed(_ probe: Bool?, at t: Double) -> Decision {
+            let first = firstAt ?? t
+            firstAt = first
+            switch probe {
+            case true?:
+                return .skip
+            case false?:
+                let since = offSince ?? t
+                offSince = since
+                return t - since >= Self.settle ? .show : .wait
+            case nil:
+                offSince = nil
+                return t - first >= Self.blind ? .show : .wait
+            }
+        }
     }
 }
 

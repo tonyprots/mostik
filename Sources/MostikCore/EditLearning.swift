@@ -117,7 +117,7 @@ public struct GlossarySuggestion: Equatable, Hashable, Sendable, Identifiable {
             guard case .object(let o) = item, let heard = o["heard"]?.stringValue,
                   let canonical = o["canonical"]?.stringValue else { return nil }
             return GlossarySuggestion(heard: heard, canonical: canonical, language: o["language"]?.stringValue,
-                                      count: Int(o["count"]?.doubleValue ?? 2))
+                                      count: o["count"]?.intValue ?? 2)
         }
     }
 }
@@ -191,10 +191,10 @@ public struct GlossaryImportPreview: Equatable, Sendable {
                 items.append(Item(canonical: canonical, heard: o["heard"]?.stringValue ?? ""))
             }
         }
-        self.init(source: payload["source"]?.stringValue ?? "", total: Int(payload["total"]?.doubleValue ?? 0),
-                  duplicates: Int(payload["duplicates"]?.doubleValue ?? 0),
-                  newCount: Int(payload["new_count"]?.doubleValue ?? Double(items.count)), items: items,
-                  added: Int(payload["added"]?.doubleValue ?? 0), path: path, text: text)
+        self.init(source: payload["source"]?.stringValue ?? "", total: payload["total"]?.intValue ?? 0,
+                  duplicates: payload["duplicates"]?.intValue ?? 0,
+                  newCount: payload["new_count"]?.intValue ?? items.count, items: items,
+                  added: payload["added"]?.intValue ?? 0, path: path, text: text)
     }
 }
 

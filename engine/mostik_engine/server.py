@@ -153,12 +153,18 @@ class Engine:
         self._out_lock = threading.Lock()
         self.pool = pool or ModelPool()
         self.verifier = verifier or VerifierRouter(on_result=self._on_verifier)
+        # Один процесс Whisper на все роли: основная для en берёт тот, что проверяет ru и определяет язык.
+        share = getattr(self.pool, "share_whisper", None)
+        shared = self._whisper_client()
+        if share is not None and shared is not None and hasattr(shared, "route"):
+            share(shared)
         self.personal = personal or PersonalGlossary()
         self.projects = ProjectGlossaries()
         self.power = PowerState()
         self.sessions: dict[str, Session] = {}
         self._sessions_lock = threading.Lock()
         self._live: dict[str, Session] = {}  # включая остановленные, ждущие проверяющую
+        self._polishing: dict[str, polish_mod.CancelToken] = {}  # «Вставить сразу» во время полировки
         self._terms: dict[tuple, tuple[TermIndex, list[str]]] = {}
         # «Скрыть термин» во вкладке «Словарь»: найденный термин не идёт в подсказку распознаванию.
         self.hidden_terms: frozenset[str] = frozenset()
@@ -215,13 +221,17 @@ class Engine:
 
     def _sweeper(self) -> None:
         while not self._stopping.wait(SWEEP_EVERY_S):
-            if self.idle():
+            if not self.idle():
+                continue
+            try:
                 self.pool.sweep()
                 self.verifier.sweep()
                 for backend in self.polishers.values():  # локальная LLM выгружается по простою
                     sweep = getattr(backend, "sweep", None)
                     if sweep:
                         sweep()
+            except Exception:  # noqa: BLE001 — один сбой уборки не выключает выгрузку моделей навсегда
+                log("сбой уборки моделей:\n" + crash_report.safe_traceback())
 
     # --- проверяющая ------------------------------------------------------
 
@@ -303,12 +313,19 @@ class Engine:
             hold = getattr(llm, "hold", None)
             if hold:
                 session.llm_releases.append(hold(session_id))
+        self._open_polish_stream(session)
+        return session
+
+    def _open_polish_stream(self, session: Session) -> None:
+        """Поток причёсывания под текущий язык сессии. Язык сменился (автоопределение) — прежний
+        поток закрывается: его системный промпт (язык, перевод или нет) собран под стартовый язык."""
+        self._close_polish_stream(session)
+        session.polish_stream = None
         backend = self.polishers.get(session.polish["backend"]) if session.polish else None
         if getattr(backend, "streaming", False) or getattr(backend, "prespawn", False):
             # MLX: инструкция уходит модели сразу, окна — по ходу речи (D3). claude -p: процесс
             # поднимается сейчас, текст — одним сообщением на отпускании (шаг 1, п. 6).
-            session.polish_stream = backend.open_stream(self._polish_request(session.polish, "", language))
-        return session
+            session.polish_stream = backend.open_stream(self._polish_request(session.polish, "", session.language))
 
     @staticmethod
     def _polish_config(payload: dict) -> dict | None:
@@ -331,7 +348,10 @@ class Engine:
             timeout = float(timeout) if timeout is not None else polish_mod.DEFAULT_TIMEOUT_S
         except (TypeError, ValueError):
             timeout = polish_mod.DEFAULT_TIMEOUT_S
-        config = {"backend": backend, "style": style, "timeout_s": max(1.0, min(timeout, 60.0))}
+        config = {"backend": backend, "style": style, "timeout_s": max(1.0, min(timeout, 60.0)),
+                  # 2026-10-21: «сначала вставить, потом причесать» — `final` уходит сразу без полировки
+                  # (`polish.status = pending`), причёсанный текст — следом событием `polished`.
+                  "late": bool(raw.get("late"))}
         # P4: пакет стиля из файлов; не найден — обычный стиль, это не ошибка протокола.
         pack_id = raw.get("pack")
         if pack_id:
@@ -380,6 +400,7 @@ class Engine:
             return
         session.languages = languages
         session.detector = client.submit_detect
+        session.detector_status = getattr(client, "status", None)
         verify = session.verifier is not None
 
         def changed(current: Session) -> None:
@@ -393,6 +414,8 @@ class Engine:
                 if current.verifier is not None:
                     current.verifier.ensure()
             self.pool.primary(current.language)
+            if getattr(current, "polish_stream", None) is not None:
+                self._open_polish_stream(current)
 
         session.on_language = changed
 
@@ -461,24 +484,40 @@ class Engine:
                 break
         self._stopping.set()
         polish_mod.kill_all()
-        self.verifier.stop()
         close = getattr(self.pool, "close", None)
         if close:
             close()
+        try:
+            self.verifier.stop(force=True)  # и общий с основной моделью процесс Whisper
+        except TypeError:  # подставной клиент в тестах
+            self.verifier.stop()
         return 0
 
     def cmd_hello(self, command: dict) -> None:
-        """Версия и состояние: модели, бэкенды причёсывания, разделение встреч по голосам."""
-        self.reply(
-            command.get("id"),
-            version=__version__,
-            python=platform.python_version(),
-            models=cached_models(),
-            verifier_enabled=self.verifier_allowed(),
-            polish={name: backend.status() for name, backend in self.polishers.items()},
-            home=str(self.personal.path.parent),
-            diarization=diarization_status(),
-        )
+        """Версия и состояние: модели, бэкенды причёсывания, разделение встреч по голосам.
+
+        В своём потоке: статус `claude` — это запуск `claude auth status` (живой замер — секунды,
+        срок 10 с), а цикл stdin в это время не читал бы ни `start`, ни `cancel`."""
+        command_id = command.get("id")
+        cloud = self.polishers.get("claude")
+        if "polish_cli" in command and hasattr(cloud, "cli"):
+            # Выбор из Настроек: Claude, Codex или «сам» — до опроса состояния, чтобы ответ был о нём.
+            choice = command.get("polish_cli")
+            cloud.cli = choice if choice in cloud.CLIS else "auto"
+
+        def job() -> None:
+            self.reply(
+                command_id,
+                version=__version__,
+                python=platform.python_version(),
+                models=cached_models(),
+                verifier_enabled=self.verifier_allowed(),
+                polish={name: backend.status() for name, backend in self.polishers.items()},
+                home=str(self.personal.path.parent),
+                diarization=diarization_status(),
+            )
+
+        threading.Thread(target=crash_report.answered(self, command_id, job), name="mostik-hello", daemon=True).start()
 
     # --- модели по кнопке (П8, пункт 5) -------------------------------------
 
@@ -622,8 +661,11 @@ class Engine:
         session_id = str(command.get("session") or "")
         with self._sessions_lock:
             session = self._live.get(session_id)
+            polishing = self._polishing.get(session_id)
         if session is not None:
             session.skip_wait()
+        if polishing is not None:  # та же кнопка во время полировки — обрывает её (2026-10-21)
+            polishing.cancel()
 
     def _finish(self, session: Session, wait_ms: float, stop_at: float, command_id: Any) -> None:
         def on_wait(done: int, total: int) -> None:
@@ -639,8 +681,16 @@ class Engine:
         except Exception as error:  # noqa: BLE001
             self._close_polish_stream(session)
             log(crash_report.safe_traceback())
-            self.error("internal", f"{type(error).__name__}: {error}", command_id=command_id,
-                       session=session.id)
+            message = f"{type(error).__name__}: {error}"
+            salvaged = self._salvaged_text(session)
+            if salvaged:
+                # Уже распознанное не пропадает: пользователь видел его в `partial` и ждёт вставки.
+                self.emit({"event": "final", "session": session.id, "text": salvaged, "raw_text": salvaged,
+                           "doubts": [], "corrections": [], "language": session.language, "verifier": "off",
+                           "polished": False, "error": message,
+                           **({"id": command_id} if command_id is not None else {})})
+                return
+            self.error("internal", message, command_id=command_id, session=session.id)
             return
         finally:
             with self._sessions_lock:
@@ -666,6 +716,14 @@ class Engine:
         ).start()
 
     @staticmethod
+    def _salvaged_text(session: Session) -> str:
+        """Текст окон, распознанных до сбоя `finish`; сам сбой сюда не пробрасывается."""
+        try:
+            return str(session.live_text() or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
     def _close_polish_stream(session: Session) -> None:
         stream = getattr(session, "polish_stream", None)
         if stream is not None:
@@ -682,14 +740,48 @@ class Engine:
         чтобы блок сомнений для агента ссылался на слова, которые есть в тексте;
         `in_text` у сомнения говорит, удалось ли это.
         """
+        if config.get("late"):
+            self._emit_then_polish(session, result, config, stop_at)
+            return
+        token = polish_mod.CancelToken()
+        with self._sessions_lock:
+            self._polishing[session.id] = token
+        # Плашка: «Причёсываю» и «Вставить сразу» — и у короткой диктовки.
+        self.emit({"event": "progress", "task": "dictation", "session": session.id,
+                   "stage": "polish", "done": 0, "total": 1})
         try:
-            result.update(self.polish_result(session, result, config))
+            with token.scope():
+                result.update(self.polish_result(session, result, config))
         except Exception:  # noqa: BLE001 — сбой стадии не теряет диктовку
             log("сбой полировки:\n" + crash_report.safe_traceback())
             result["polished"] = False
             self._close_polish_stream(session)
+        finally:
+            with self._sessions_lock:
+                self._polishing.pop(session.id, None)
         result["timings"]["tail_ms"] = round((time.monotonic() - stop_at) * 1000, 1)
         self.emit(result)
+
+    def _emit_then_polish(self, session: Session, result: dict, config: dict, stop_at: float) -> None:
+        """Текст до полировки — сразу, приложение его вставляет; причёсанный — событием `polished`,
+        приложение заменяет вставку, если поле не трогали (2026-10-21: ждать sonnet 5–10 с на длинной
+        диктовке не хотим, а haiku и нарезка теряли смысл)."""
+        self._close_polish_stream(session)  # поток не нужен: текст уходит целиком одним вызовом
+        session.polish_stream = None
+        early = dict(result)
+        early["polished"] = False
+        early["polish"] = {"backend": config["backend"], "style": config["style"], "status": "pending"}
+        early["timings"] = dict(result.get("timings") or {})
+        early["timings"]["tail_ms"] = round((time.monotonic() - stop_at) * 1000, 1)
+        self.emit(early)
+        try:
+            polished = self.polish_result(session, result, config)
+        except Exception:  # noqa: BLE001 — сбой стадии не теряет диктовку: текст уже вставлен
+            log("сбой полировки:\n" + crash_report.safe_traceback())
+            polished = {"text": result.get("text", ""), "polished": False,
+                        "polish": {"backend": config["backend"], "style": config["style"], "status": "failed"}}
+        self.emit({"event": "polished", "session": session.id, "text": polished["text"],
+                   "polished": polished["polished"], "polish": polished["polish"]})
 
     def polish_result(self, session: Session, result: dict, config: dict) -> dict:
         backend = self.polishers.get(config["backend"])
@@ -775,7 +867,7 @@ class Engine:
             self.reply(command_id, text=outcome.text, polished=outcome.polished, status=outcome.status,
                        ms=outcome.ms, rules=applied, **({"detail": outcome.detail} if outcome.detail else {}))
 
-        threading.Thread(target=run, name="mostik-polish-text", daemon=True).start()
+        threading.Thread(target=crash_report.answered(self, command_id, run), name="mostik-polish-text", daemon=True).start()
 
     def cmd_cancel(self, command: dict) -> None:
         session_id = str(command.get("session") or "")
@@ -796,7 +888,6 @@ class Engine:
         if not path:
             raise EngineError("internal", "нет поля path")
         folders = self._folders(command)
-        pcm = read_wav_pcm16(path)
         session_id = str(command.get("session") or f"file-{uuid.uuid4().hex[:12]}")
         session = self._new_session(session_id, command, bool(command.get("verify", True)))
         with self._sessions_lock:
@@ -806,6 +897,23 @@ class Engine:
         frame = int(FRAME_S * SAMPLE_RATE) * 2
         slice_bytes = int(FILE_SLICE_S * SAMPLE_RATE) * 2
         state = {"offset": 0, "prepared": False}
+        pcm = b""
+
+        def load() -> None:
+            # Чтение и пересчёт частоты большого WAV — секунды: не в цикле stdin (он не читал бы
+            # команды) и не в рабочем потоке (в нём ждала бы диктовка).
+            nonlocal pcm
+            reading = time.monotonic()
+            try:
+                pcm = read_wav_pcm16(path)
+                log(f"{session_id}: WAV прочитан за {time.monotonic() - reading:.2f} с")
+            except EngineError as error:
+                with self._sessions_lock:
+                    self._live.pop(session_id, None)
+                session.cancel()
+                self.error(error.code, str(error), command_id=command_id, session=command.get("session"))
+                return
+            self.submit(PRIORITY_BACKGROUND, chunk)
 
         def chunk() -> None:
             if session.cancelled:
@@ -830,7 +938,7 @@ class Engine:
             else:
                 self._finish(session, wait_ms, time.monotonic(), command_id)
 
-        self.submit(PRIORITY_BACKGROUND, chunk)
+        threading.Thread(target=crash_report.answered(self, command_id, load), name="mostik-file-read", daemon=True).start()
 
     def cmd_project_glossary(self, command: dict) -> None:
         path = command.get("path")
@@ -847,7 +955,7 @@ class Engine:
             self.projects.forget(str(path))
             self.reply(command_id, **result)
 
-        threading.Thread(target=job, name="mostik-project-glossary", daemon=True).start()
+        threading.Thread(target=crash_report.answered(self, command_id, job), name="mostik-project-glossary", daemon=True).start()
 
     @staticmethod
     def _folders(command: dict) -> list[str]:
@@ -1029,6 +1137,9 @@ class Engine:
                 if command_id is not None:
                     event["id"] = command_id
                 self.emit(event)
+            except Exception as error:  # noqa: BLE001 — полоса встреч одна: её поток не должен умереть
+                log(crash_report.safe_traceback())
+                self.error("internal", f"{type(error).__name__}: {error}", command_id=command_id)
             finally:
                 self.meeting_running.clear()
 
@@ -1039,11 +1150,16 @@ class Engine:
 
         root = Path(str(command.get("root") or "")).expanduser() if command.get("root") else mostik_home() / "meetings"
 
+        command_id = command.get("id")
+
         def job() -> None:
             stats = meeting_folder.migrate_all(root)
-            self.reply(command.get("id"), **stats)
+            self.reply(command_id, **stats)
 
-        self.submit(PRIORITY_BACKGROUND, job)
+        # Свой поток, а не очередь моделей: миграция читает transcript.json каждой встречи
+        # (секунды на сотнях папок), а за ней в очереди стояла бы подготовка диктовки.
+        threading.Thread(target=crash_report.answered(self, command_id, job), name="mostik-meetings-migrate",
+                         daemon=True).start()
 
     def cmd_edit(self, command: dict) -> None:
         """Голосовая правка выделенного (D5): `docs/polish-contract.md`, раздел «Голосовая правка»."""

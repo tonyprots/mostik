@@ -89,10 +89,10 @@ func runPerfTests() {
         equal(t.handle(.pastePosted), [], "⌘V без вставки — ничего")
     }
 
-    // Шаг 3, п. 12: уровень — атака мгновенная, спад ~120 мс (×0,75 за тик 50 мс).
+    // Шаг 3, п. 12: уровень — атака ~50 мс, спад ~150 мс на тике 50 мс.
     do {
-        equal(LevelSmoothing.next(previous: 0.2, sample: 0.9), 0.9, "рост мгновенный")
-        check(abs(LevelSmoothing.next(previous: 0.8, sample: 0.0) - 0.6) < 1e-6, "спад плавный")
+        check(abs(LevelSmoothing.next(previous: 0.2, sample: 0.9) - 0.69) < 1e-6, "рост быстрый")
+        check(abs(LevelSmoothing.next(previous: 0.8, sample: 0.0) - 0.56) < 1e-6, "спад плавный")
         var v: Float = 1
         var ticks = 0
         while v > 0.1 { v = LevelSmoothing.next(previous: v, sample: 0); ticks += 1 }
@@ -100,7 +100,35 @@ func runPerfTests() {
         var ring: [Float] = Array(repeating: 0, count: 4)
         LevelSmoothing.push(0.8, into: &ring)
         LevelSmoothing.push(0.0, into: &ring)
-        check(ring.count == 4 && ring[2] == 0.8 && abs(ring[3] - 0.6) < 1e-6, "буфер едет лентой, новое в конце: \(ring)")
+        check(ring.count == 4 && abs(ring[2] - 0.56) < 1e-6 && abs(ring[3] - 0.392) < 1e-6, "буфер едет лентой, новое в конце: \(ring)")
+    }
+
+    // 2026-10-21: волна по шумовому полу — гул ниже 150 Гц не поднимает тишину, речь занимает шкалу.
+    do {
+        let rate = 16_000.0
+        func tone(_ hz: Double, _ amp: Float, _ n: Int = 800) -> [Float] {
+            (0..<n).map { amp * Float(sin(2 * Double.pi * hz * Double($0) / rate)) }
+        }
+        var probe = LevelMeter(sampleRate: rate)
+        for _ in 0..<10 { _ = tone(58, 0.03).withUnsafeBufferPointer { probe.filteredDB($0.baseAddress!, count: 800) } }
+        let hum = tone(58, 0.03).withUnsafeBufferPointer { probe.filteredDB($0.baseAddress!, count: 800) }
+        check(hum < -50, "гул 58 Гц (−33 dBFS) срезан фильтром на 17+ dB: \(hum) dB")
+
+        var m = LevelMeter(sampleRate: rate)
+        var quiet: Float = 1
+        for _ in 0..<40 { quiet = m.level(db: -50, dt: 0.05) }
+        check(quiet == 0, "тишина на полу — ноль: \(quiet)")
+        var loud: Float = 0
+        for _ in 0..<4 { loud = m.level(db: -36, dt: 0.05) }
+        check(loud > 0.6, "речь на 14 dB выше пола — больше половины шкалы: \(loud)")
+        check((m.floor ?? 0) < -48, "речь не тянет пол вверх: \(m.floor ?? 0)")
+        for _ in 0..<10 { _ = m.level(db: -50, dt: 0.05) }
+        check(m.level(db: -50, dt: 0.05) == 0, "после речи тишина снова ноль")
+        var n = LevelMeter(sampleRate: rate)
+        var faint: Float = 1
+        for _ in 0..<40 { _ = n.level(db: -50, dt: 0.05) }
+        faint = n.level(db: -46, dt: 0.05)
+        check(faint < 0.25, "шорох на 4 dB выше пола не раздувается: \(faint)")
     }
 
     // Декоративное: иконка строки меню «дышит» голосом не чаще 10 раз в секунду.

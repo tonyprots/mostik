@@ -11,6 +11,8 @@ public final class GlossaryLearningModel: ObservableObject {
     @Published public var suggestions: [GlossarySuggestion] = []
     /// Предложение в карточке над HUD прямо сейчас.
     @Published public var prompt: GlossarySuggestion? = nil
+    /// Предложение, у которого в «Словаре» открыто поле «своё написание» (`GlossarySuggestion.id`).
+    @Published public var editingSuggestionID: String? = nil
     /// Карточка после вставки: «Запомнить написание…» для этой диктовки.
     /// Открыть форму «Запомнить написание» у этой диктовки во вкладке «Диктовка».
     @Published public var spellingEntryID: String? = nil
@@ -25,6 +27,11 @@ public final class GlossaryLearningModel: ObservableObject {
 
     // Намерения.
     public var onDecide: (_ suggestion: GlossarySuggestion, _ accept: Bool) -> Void = { _, _ in }
+    /// Предложенное написание неверно, но слово поправить надо: в словарь идёт то, что ввёл человек,
+    /// а предложенная пара получает отказ.
+    public var onDecideCustom: (_ suggestion: GlossarySuggestion, _ canonical: String) -> Void = { _, _ in }
+    /// «Своё…» в карточке над плашкой: открыть «Словарь» с полем ввода у этого предложения.
+    public var onEditSuggestion: (_ suggestion: GlossarySuggestion) -> Void = { _ in }
     /// `source`: "handy" | "wispr" | "csv" | "lines"; для "csv" без пути controller откроет NSOpenPanel,
     /// для "lines" текст берётся из буфера.
     public var onImport: (_ source: String) -> Void = { _ in }

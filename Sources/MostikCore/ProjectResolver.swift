@@ -10,7 +10,7 @@ public struct ProcessEntry: Equatable, Sendable {
     public var path: String
     /// Время запуска, секунды с 1970.
     public var startTime: Double
-    /// argv — только для интерпретаторов (node, bun), иначе пусто.
+    /// argv — для интерпретаторов (node, bun) и программ вне системных папок (`ProjectResolver.wantsArgs`), иначе пусто.
     public var args: [String]
 
     public init(pid: Int32, ppid: Int32, name: String, path: String = "", startTime: Double = 0, args: [String] = []) {
@@ -27,6 +27,21 @@ public enum ProjectResolver {
 
     public static func isInterpreter(_ p: ProcessEntry) -> Bool {
         interpreters.contains(p.name.lowercased()) || interpreters.contains(lastComponent(p.path))
+    }
+
+    /// Пути, где агентов нет: системные процессы и приложения. Их на Mac сотни — argv у них не читаем.
+    static let systemPrefixes = ["/System/", "/usr/libexec/", "/usr/sbin/", "/usr/bin/", "/sbin/", "/bin/", "/Library/Apple/"]
+
+    /// Читать ли argv процесса, чтобы узнать в нём агента. Интерпретатору (node, bun, deno) — всегда: агент —
+    /// его скрипт. Прочим — когда имя и путь агента не выдали: нативная сборка Claude Code запускается
+    /// ссылкой `claude` на `…/versions/2.1.50`, и у процесса имя и путь — номер версии; «claude» стоит
+    /// только в argv[0] (S5).
+    public static func wantsArgs(_ p: ProcessEntry, names: Set<String> = []) -> Bool {
+        if isInterpreter(p) { return true }
+        let wanted = Set(names.map { $0.lowercased() })
+        if wanted.contains(p.name.lowercased()) || wanted.contains(lastComponent(p.path)) { return false }
+        guard !p.path.isEmpty, !p.path.contains(".app/Contents/") else { return false }
+        return !systemPrefixes.contains { p.path.hasPrefix($0) }
     }
 
     public static func isAgent(_ p: ProcessEntry, names: Set<String>) -> Bool {
@@ -51,10 +66,17 @@ public enum ProjectResolver {
         for candidate in [p.name.lowercased(), lastComponent(p.path)] where wanted.contains(candidate) {
             return candidate
         }
-        guard isInterpreter(p), !p.args.isEmpty else { return nil }
-        // Агент мог переписать argv[0] через `process.title`.
+        guard !p.args.isEmpty else { return nil }
+        // argv[0]: агент мог переписать его через `process.title` («claude», бывает и с аргументами),
+        // а нативную сборку оболочка запускает ссылкой с именем агента (S5).
         let title = scriptName(p.args[0])
         if wanted.contains(title) { return title }
+        if let first = p.args[0].split(separator: " ").first, first.count < p.args[0].count {
+            let head = scriptName(String(first))
+            if wanted.contains(head) { return head }
+        }
+        // Дальше — скрипт интерпретатора; у обычной программы аргументы — её дело.
+        guard isInterpreter(p) else { return nil }
         var skipValue = false
         for arg in p.args.dropFirst() {
             if skipValue { skipValue = false; continue }

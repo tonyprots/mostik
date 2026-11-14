@@ -21,6 +21,8 @@ public final class MeetingExtrasModel: ObservableObject {
     }
 
     @Published public var prompt: Prompt? = nil
+    /// В прошлом звонке Телемоста шёл его собственный конспект: напоминание о такой встрече запись не предлагает.
+    @Published public var telemostSummaryHabit = false
     /// Ближайшая встреча календаря для карточки «Скоро» во вкладке «Встречи» (W2).
     @Published public var upcoming: UpcomingMeeting? = nil
     /// Заметки до встречи по id события (W2).

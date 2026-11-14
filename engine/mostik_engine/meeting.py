@@ -22,7 +22,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 import wave
 from pathlib import Path
@@ -41,10 +40,18 @@ INTERLOCUTOR = "Собеседник"
 CHANNEL_WORDS = frozenset({"микрофон", "система", "системный звук", "mic", "microphone", "system"})
 MARK_PREFIX = "> 📌"
 ECHO_SIMILARITY = 0.6
-# Порог тишины: RMS ниже -50 dBFS по всей дорожке — значит, дорожку не прогоняем.
+ECHO_MIN_WORDS = 3
+# Микрофон опередил систему и началом, и концом на столько секунд — повтор идёт от меня к ней.
+ECHO_LEAD_SECONDS = 0.4
+# Порог тишины: RMS ниже -50 dBFS и по всей дорожке, и в самой громкой её секунде —
+# значит, дорожку не прогоняем.
 SILENCE_DBFS = -50.0
 # Сколько секунд между репликами одного говорящего ещё считаем одной репликой.
 MERGE_GAP_SECONDS = 2.0
+# Склейка дорожек из нескольких сегментов — внутри папки встречи; живёт только во время прогона.
+SCRATCH_DIR = ".scratch"
+# Параметры прогона дорожки (язык, число говорящих, словарь) рядом с его `manifest.json`.
+RUN_PARAMS = "mostik-run.json"
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -85,36 +92,75 @@ def overlaps(a_start: float, a_end: float, b_start: float, b_end: float) -> bool
     return min(a_end, b_end) > max(a_start, b_start)
 
 
+def echo_score(echo: str, source: str) -> float:
+    """Насколько `echo` повторяет `source`, 0..1.
+
+    Покрытие считается по словам ЭХА, а не короткой стороны: иначе короткая реплика
+    собеседника («Так и сделаем.») объявляла эхом мою длинную, в которой есть те же слова.
+    В покрытие идут только совпадения от двух слов подряд: разрозненные «да… и… не… то» —
+    не повтор. Реплика из одного-двух слов эхом не считается: «Да.» на «Да.» — мой ответ.
+    """
+    a = normalize_text(echo).split()
+    b = normalize_text(source).split()
+    if len(a) < ECHO_MIN_WORDS or not b:
+        return 0.0
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks() if block.size >= 2)
+    return max(matcher.ratio(), matched / len(a))
+
+
+def split_echo(
+    mic: list[dict[str, Any]],
+    system: list[dict[str, Any]],
+    threshold: float = ECHO_SIMILARITY,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Убрать повтор между дорожками: (микрофон, система, сколько выброшено).
+
+    Сегмент микрофона — эхо, если он пересекается по времени с сегментом системы
+    (или с несколькими подряд) и повторяет его текст с порогом ≥ threshold.
+    Эхо — та дорожка, что началась позже. Если микрофон заметно опередил систему и она
+    повторяет его целиком, это мой голос вернулся от собеседника без наушников: уходит
+    сегмент системы, реплика остаётся моей.
+    """
+    kept: list[dict[str, Any]] = []
+    leaked: set[int] = set()
+    dropped = 0
+    for segment in mic:
+        overlapping = [
+            (index, item)
+            for index, item in enumerate(system)
+            if overlaps(segment["start"], segment["end"], item["start"], item["end"])
+        ]
+        if overlapping:
+            joined = " ".join(item["text"] for _, item in overlapping)
+            best = max(
+                [echo_score(segment["text"], joined)]
+                + [echo_score(segment["text"], item["text"]) for _, item in overlapping]
+            )
+            if best >= threshold:
+                dropped += 1
+                index, item = overlapping[0]
+                if (
+                    len(overlapping) == 1
+                    and item["start"] - segment["start"] >= ECHO_LEAD_SECONDS
+                    and item["end"] - segment["end"] >= ECHO_LEAD_SECONDS
+                    and echo_score(item["text"], segment["text"]) >= threshold
+                ):
+                    leaked.add(index)
+                    kept.append(segment)
+                continue
+        kept.append(segment)
+    return kept, [item for index, item in enumerate(system) if index not in leaked], dropped
+
+
 def drop_echo(
     mic: list[dict[str, Any]],
     system: list[dict[str, Any]],
     threshold: float = ECHO_SIMILARITY,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Выбросить сегменты микрофона, которые повторяют системную дорожку.
-
-    Сегмент считается эхом, если он пересекается по времени с сегментом
-    системы (или с несколькими подряд) и текст похож с порогом ≥ threshold.
-    Возвращает (оставшиеся, сколько выброшено).
-    """
-    kept: list[dict[str, Any]] = []
-    dropped = 0
-    for segment in mic:
-        overlapping = [
-            item
-            for item in system
-            if overlaps(segment["start"], segment["end"], item["start"], item["end"])
-        ]
-        if overlapping:
-            joined = " ".join(item["text"] for item in overlapping)
-            best = max(
-                [text_similarity(segment["text"], joined)]
-                + [text_similarity(segment["text"], item["text"]) for item in overlapping]
-            )
-            if best >= threshold:
-                dropped += 1
-                continue
-        kept.append(segment)
-    return kept, dropped
+    """Сторона микрофона из `split_echo`: (оставшиеся сегменты, сколько выброшено)."""
+    kept, _, _ = split_echo(mic, system, threshold)
+    return kept, len(mic) - len(kept)
 
 
 def speaker_labels(system: Iterable[dict[str, Any]]) -> dict[str, str]:
@@ -448,6 +494,31 @@ def wav_stats(path: Path) -> tuple[float, float]:
     return count / channels / rate, float(dbfs)
 
 
+def loudest_second_dbfs(path: Path) -> float:
+    """Уровень RMS самой громкой секунды PCM16-WAV, dBFS.
+
+    Средний уровень часовой дорожки с одной репликой — «тишина»: 10 с речи на −33 dBFS
+    среди 600 с шума −70 dBFS дают −50,8 dBFS, и мой единственный вопрос пропадал.
+    """
+    import numpy as np
+
+    best = 0.0
+    with wave.open(str(path), "rb") as reader:
+        if reader.getsampwidth() != 2:
+            raise ValueError(f"{path.name}: ожидался PCM16, получено {reader.getsampwidth() * 8} бит")
+        rate = reader.getframerate()
+        while True:
+            chunk = reader.readframes(rate)
+            if not chunk:
+                break
+            samples = np.frombuffer(chunk, dtype="<i2").astype(np.float64)
+            # Обрывок короче четверти секунды в конце — не мера: в нём может быть один щелчок.
+            if samples.size and (samples.size >= rate // 4 or best == 0.0):
+                best = max(best, float(np.dot(samples, samples)) / samples.size)
+    rms = best ** 0.5
+    return float(20 * np.log10(rms / 32768.0)) if rms > 0 else float("-inf")
+
+
 def track_usable(path: str | Path | None) -> tuple[bool, float]:
     """Есть ли в дорожке что расшифровывать: (годна, длительность)."""
     if not path:
@@ -458,6 +529,9 @@ def track_usable(path: str | Path | None) -> tuple[bool, float]:
     try:
         repair_wav_header(candidate)
         duration, level = wav_stats(candidate)
+        if duration >= 0.5 and level <= SILENCE_DBFS:
+            # Тихая в среднем дорожка может нести редкую речь: решает самая громкая секунда.
+            level = loudest_second_dbfs(candidate)
     except (wave.Error, ValueError, EOFError):
         return False, 0.0
     return duration >= 0.5 and level > SILENCE_DBFS, duration
@@ -726,11 +800,13 @@ def diarization_crash(message: str) -> bool:
     return any(sign in text for sign in _DIARIZATION_SIGNS)
 
 
-def finished_track(output: Path, audio: Path, diarize: bool) -> bool:
+def finished_track(output: Path, audio: Path, diarize: bool, params: dict[str, Any] | None = None) -> bool:
     """Дорожка уже расшифрована прошлой попыткой — тем же режимом и с тем же разделением по голосам.
 
     Повтор встречи после сбоя на второй дорожке иначе заново гонит первую, и
-    повтор длится дольше самой записи.
+    повтор длится дольше самой записи. `params` — язык, число говорящих и словарь этого
+    запуска: прогон с другими (записаны в `RUN_PARAMS`) не годится. Прогон без этой записи
+    сделан до неё и принимается, как раньше.
     """
     try:
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
@@ -741,7 +817,24 @@ def finished_track(output: Path, audio: Path, diarize: bool) -> bool:
         return False
     if (manifest.get("source") or {}).get("size_bytes") != size:
         return False
+    if params is not None and (output / RUN_PARAMS).is_file():
+        try:
+            recorded = json.loads((output / RUN_PARAMS).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if recorded != {**params, "finished": True}:
+            return False
     return (manifest.get("diarization_model") is not None) == diarize
+
+
+def record_run(output: Path, params: dict[str, Any], *, finished: bool) -> None:
+    """Параметры прогона дорожки рядом с его результатом; `finished` — прогон дошёл до конца."""
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        (output / RUN_PARAMS).write_text(
+            json.dumps({**params, "finished": finished}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # без записи повтор просто примет прогон по старым признакам
 
 
 def track_log(track: str, text: str) -> None:
@@ -901,7 +994,11 @@ def run_meeting(payload: dict[str, Any], emit: Emit) -> dict[str, Any]:
     out_dir = Path(payload["out_dir"]).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     folder_contract.transcript_started(out_dir)
-    scratch = Path(tempfile.mkdtemp(prefix="mostik-tracks-"))
+    # Склейка дорожек лежит в папке встречи, а не в $TMPDIR: убитый движок оставлял там WAV всей
+    # встречи, куда не дотягиваются «Забыть» и сроки хранения. Брошенное убирает следующий прогон.
+    scratch = out_dir / SCRATCH_DIR
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True, exist_ok=True)
     try:
         # Живучесть записи (M12): дорожку из нескольких сегментов склеиваем по смещениям.
         payload = {**payload, **assemble_tracks(payload, out_dir, scratch)}
@@ -943,10 +1040,13 @@ def _run_meeting(payload: dict[str, Any], emit: Emit, out_dir: Path, started: fl
     diarization_failed = False
     for index, (track, audio, diarize) in enumerate(plan):
         output = out_dir / f"{track}-transcript"
-        if finished_track(output, audio, diarize):
+        params = {"language": language, "speakers": speakers if diarize else None,
+                  "glossary": str(options["glossary"]) if options["glossary"] else None}
+        if finished_track(output, audio, diarize, params):
             track_log(track, "уже расшифрована прошлой попыткой")
             segments[track] = load_segments(output)
             continue
+        record_run(output, params, finished=False)
 
         def run(diarize: bool) -> None:
             if not diarize:
@@ -983,10 +1083,12 @@ def _run_meeting(payload: dict[str, Any], emit: Emit, out_dir: Path, started: fl
                 run(False)
                 diarization_failed = True
                 diarize_system = False
+                params = {**params, "speakers": None}
+        record_run(output, params, finished=True)
         segments[track] = load_segments(output)
 
     emit(progress_event(PHASE_FINISH, round(PROGRESS_SCALE * _TRACKS_SHARE)))
-    mic_segments, echo_dropped = drop_echo(segments["mic"], segments["system"])
+    mic_segments, segments["system"], echo_dropped = split_echo(segments["mic"], segments["system"])
     turns = merge_tracks(mic_segments, segments["system"])
     # Исходная метка диаризации остаётся в `label`: на неё опираются уверенность (M15),
     # голосовая память и переименование (M14), имя — только в `speaker`.

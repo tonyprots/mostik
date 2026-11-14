@@ -11,21 +11,56 @@ public protocol HTTPTransport: Sendable {
 /// URLSession без кеша и cookie: ответы календаря не оседают на диске, сессии сервера не копятся.
 public struct URLSessionTransport: HTTPTransport {
     let session: URLSession
+    let maxBytes: Int
 
-    public init(timeout: TimeInterval = 20) {
+    /// `protocolClasses` — подделка сети для тестов; в приложении не задаётся.
+    public init(timeout: TimeInterval = 20, maxBytes: Int = CalDAV.maxResponseBytes, protocolClasses: [AnyClass]? = nil) {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout * 3
         config.httpCookieAcceptPolicy = .never
         config.httpShouldSetCookies = false
         config.urlCache = nil
-        session = URLSession(configuration: config)
+        if let protocolClasses { config.protocolClasses = protocolClasses }
+        self.maxBytes = maxBytes
+        session = URLSession(configuration: config, delegate: RedirectGuard(), delegateQueue: nil)
     }
 
+    /// Ответ читается потоком: больше `maxBytes` — обрыв загрузки, а не весь ответ в памяти.
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw CalendarAccountError.badResponse }
+        let (bytes, response) = try await session.bytes(for: request)
+        // Отказ — с отменой задачи: иначе загрузка шла бы дальше в фоне.
+        guard let http = response as? HTTPURLResponse, response.expectedContentLength <= Int64(maxBytes) else {
+            bytes.task.cancel()
+            throw CalendarAccountError.badResponse
+        }
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            if data.count > maxBytes {
+                bytes.task.cancel()
+                throw CalendarAccountError.badResponse
+            }
+        }
         return (data, http)
+    }
+}
+
+/// Редирект — только на тот же хост и по https: заголовок `Authorization` (пароль приложения, токен)
+/// не уходит туда, куда указал ответ сервера. Отказ — вызывающий получает сам ответ 3xx.
+public enum RedirectPolicy {
+    public static func allows(from original: URL?, to target: URL?) -> Bool {
+        guard let original, let target, let host = original.host?.lowercased(), !host.isEmpty else { return false }
+        return target.scheme?.lowercased() == "https" && original.scheme?.lowercased() == "https"
+            && target.host?.lowercased() == host
+    }
+}
+
+final class RedirectGuard: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        let from = task.currentRequest?.url ?? task.originalRequest?.url
+        completionHandler(RedirectPolicy.allows(from: from, to: request.url) ? request : nil)
     }
 }
 
@@ -83,7 +118,7 @@ public struct CalDAVAccount: Equatable, Sendable {
 }
 
 public enum CalDAV {
-    static let maxResponseBytes = 20_000_000
+    public static let maxResponseBytes = 20_000_000
 
     // MARK: запросы
 

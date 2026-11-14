@@ -111,11 +111,13 @@ public final class AppModel: ObservableObject {
             case .transcribing: menuIcon.set(.transcribing)
             default: menuIcon.set(.idle)
             }
-            if hud != .transcribing { verifyProgress = nil }
+            if hud != .transcribing { verifyProgress = nil; verifyStage = "verify" }
         }
     }
     /// Длинная диктовка ждёт вторую модель: доля проверенных пачек 0…1; nil — ожидания нет.
     @Published public var verifyProgress: Double? = nil
+    /// Чего ждём под полосой: `verify` — вторую модель, `polish` — причёсывание (кнопка обрывает и его).
+    @Published public var verifyStage: String = "verify"
     /// «Вставить сразу»: не ждать вторую модель, вставить текст первой.
     public var onInsertFast: () -> Void = {}
     /// Живые данные записи — в своих объектах (шаг 2, п. 8): `AppModel` смотрят ~80 видов,
@@ -176,6 +178,12 @@ public final class AppModel: ObservableObject {
     @Published public var updatesCheckable = false
     /// Какие бэкенды полировщика движок считает доступными (`hello.polish`); пусто — ещё не знаем.
     @Published public var polishAvailable: [String: Bool] = [:]
+    /// Почему бэкенд недоступен: `not_found`, `login` (Claude Code не вошёл), `model_missing`…
+    @Published public var polishReasons: [String: String] = [:]
+    /// Что из «Claude/Codex» есть на этом Mac: «ok», «login» (вход истёк), «missing».
+    @Published public var polishCLIFound: [String: String] = [:]
+    /// Через что причёсывание идёт сейчас: «claude» или «codex»; nil — ни через что.
+    @Published public var polishCLIUsing: String?
     /// Выбран `claude`, но согласие на отправку в облако ещё не дано: показываем предупреждение.
     @Published public var polishConsentPending = false
     @Published public var permissions = Permissions()
@@ -373,6 +381,8 @@ public final class AppModel: ObservableObject {
     /// Источники календаря: подключить (Google — браузер, Яндекс — окно входа, macOS — доступ и выбор), отключить,
     /// выбрать календари, сохранить выбор, войти в Яндекс, отменить вход.
     public var onConnectCalendar: (CalendarAccounts.Kind) -> Void = { _ in }
+    /// Google без прямого входа в сборке подключается через аккаунт macOS — открыть «Учётные записи интернета».
+    public var onOpenInternetAccounts: () -> Void = {}
     public var onDisconnectCalendar: (CalendarAccounts.Kind) -> Void = { _ in }
     public var onPickCalendars: (CalendarAccounts.Kind) -> Void = { _ in }
     public var onSaveCalendars: (CalendarAccounts.Kind, [RemoteCalendar]) -> Void = { _, _ in }
@@ -381,6 +391,9 @@ public final class AppModel: ObservableObject {
     public var onAddMeetingMark: (String) -> Void = { _ in }
     public var onToggleMeetingPause: () -> Void = {}
     public var onToggleDictationPause: () -> Void = {}
+    /// Пункты плашки записи нажимаются мышью: закончить и вставить, отменить.
+    public var onFinishDictation: () -> Void = {}
+    public var onCancelDictation: () -> Void = {}
     /// Пользователь принял предупреждение о согласии (M4); запись встречи начинается после него.
     public var onAcknowledgeConsent: () -> Void = {}
 }

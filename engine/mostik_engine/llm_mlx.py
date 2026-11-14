@@ -613,6 +613,8 @@ class LlmClient:
         self._failed: str | None = None
         self._waiters: dict[int, tuple[threading.Event, dict]] = {}
         self._partials: dict[int, Any] = {}
+        # Паузы под диктовку, о которых процесс знает (ключ → до какого момента): `held`.
+        self._holds: dict[str, float] = {}
         self._next = 0
         self._used = time.monotonic()
 
@@ -706,6 +708,7 @@ class LlmClient:
         with self._lock:
             if self._process is process:
                 self._process = None
+                self._holds.clear()  # паузы знал только этот процесс
             waiters, self._waiters = self._waiters, {}
         for event, box in waiters.values():
             box["error"] = "процесс модели завершился"
@@ -725,8 +728,19 @@ class LlmClient:
             self._used = time.monotonic()
             return True
 
+    def held(self) -> bool:
+        """Идёт диктовка, и процесс об этом знает: его фоновые задачи стоят."""
+        now = time.monotonic()
+        with self._lock:
+            for key in [key for key, until in self._holds.items() if until <= now]:
+                del self._holds[key]
+            return bool(self._holds)
+
     def request(self, payload: dict, timeout: float, on_partial=None) -> dict:
-        """Запрос с ответом. Таймаут считает и загрузку модели; по нему — `abort`."""
+        """Запрос с ответом. Таймаут считает и загрузку модели; по нему — `abort`.
+
+        У фонового запроса (ИИ встреч, «Спросить») срок не идёт, пока процесс стоит на паузе
+        под диктовкой (`hold`): иначе кусок сводки падал по таймауту, так и не начав считаться."""
         deadline = time.monotonic() + timeout
         if not self.ensure():
             raise P.PolishUnavailable(self._failed or "локальная модель не установлена")
@@ -745,11 +759,24 @@ class LlmClient:
             with self._lock:
                 self._waiters.pop(rid, None)
             raise P.PolishError("процесс модели не принимает запросы", "failed")
-        if not event.wait(max(0.0, deadline - time.monotonic())):
+        # «Вставить сразу»: процесс модели общий, его не убить — ждём кусками и шлём `abort`.
+        token = P.CancelToken.current()
+        background = payload.get("priority") == "background"
+        last = time.monotonic()
+        while not event.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+            now = time.monotonic()
+            if background and self.held():
+                deadline += now - last
+            last = now
+            cancelled = token is not None and token.cancelled
+            if not cancelled and time.monotonic() < deadline:
+                continue
             with self._lock:
                 self._waiters.pop(rid, None)
                 self._partials.pop(rid, None)
             self.send({"op": "abort", "id": rid})
+            if cancelled:
+                raise P.PolishError("пропущено: «Вставить сразу»", "skipped")
             raise P.PolishTimeout(f"нет ответа за {timeout:.0f} с")
         if "error" in box:
             raise P.PolishError(str(box["error"]), "failed")
@@ -761,10 +788,13 @@ class LlmClient:
 
     def hold(self, key: str, ttl: float = HOLD_TTL_S) -> None:
         """Идёт диктовка: фоновая генерация в процессе встаёт на паузу. Процесс ради этого не поднимаем."""
-        if self.running():
-            self.send({"op": "hold", "key": key, "ttl": ttl})
+        if self.running() and self.send({"op": "hold", "key": key, "ttl": ttl}):
+            with self._lock:
+                self._holds[key] = time.monotonic() + ttl  # как у процесса: пауза сама истекает по ttl
 
     def release(self, key: str) -> None:
+        with self._lock:
+            self._holds.pop(key, None)
         if self.running():
             self.send({"op": "release", "key": key})
 
@@ -824,6 +854,12 @@ class MlxStream(P.PolishStream):
 
             def complete(self, system: str, user: str, timeout: float, on_partial=None) -> str:
                 lang = stream.request.language
+                fresh = P.stream_system_for(stream.request)
+                if fresh != stream.system:
+                    # Запрос сменил язык или перевод после `open`: прогнанная инструкция не та —
+                    # поток закрываем, текст идёт обычным вызовом с верным промптом.
+                    stream.cancel()
+                    stream.system = fresh
                 payload = {"op": "finish" if stream.opened else "complete", "stream": stream.stream_id,
                            "system": stream.system, "user": user + _notes_suffix(lang, terms, keep, vocabulary),
                            "closers": [P.CLOSE, P.REFUSAL], "prefill": POLISH_PREFILL}

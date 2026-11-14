@@ -55,6 +55,51 @@ func runGestureDoctorTests() {
     equal(g.handle(.holdUp), [], "после Esc отпускание молчит")
     equal(g.handle(.escape(recording: false)), [], "Esc без записи")
 
+    // ⌘+клик (2026-11-09): клик мышью отменяет запись, начатую удержанием; отпускание молчит.
+    g.handle(.holdDown(otherModifiers: false)); g.recordingStarted(true)
+    equal(g.handle(.mouseDown), [.cancel], "⌘+клик по вкладке")
+    equal(g.handle(.mouseDown), [], "второй клик — уже ничего")
+    equal(g.handle(.holdUp), [])
+    // Защёлкнутую запись и чужую (остановка без рук) клик не трогает.
+    g.handle(.holdDown(otherModifiers: false)); g.recordingStarted(true); g.handle(.modifierDown)
+    equal(g.handle(.mouseDown), [], "клик при защёлке")
+    g.handle(.holdUp)
+    g.handle(.holdDown(otherModifiers: false)); g.recordingStarted(false)
+    equal(g.handle(.mouseDown), [], "клик на чужой записи")
+    equal(g.handle(.holdUp), [.end])
+    equal(g.handle(.mouseDown), [], "клик без удержания")
+
+    // Браузер без поля ввода (2026-11-09): удержание запись не начинает.
+    let chrome = "com.google.Chrome"
+    check(!BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: FieldSnapshot(bundleID: chrome, role: "AXWebArea")),
+          "веб-страница без поля")
+    check(!BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: FieldSnapshot(bundleID: chrome)), "фокус не прочитан")
+    check(!BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: FieldSnapshot(bundleID: chrome, role: "AXRadioButton")),
+          "вкладка")
+    check(BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: FieldSnapshot(bundleID: chrome, role: "AXTextArea")),
+          "поле ввода")
+    check(BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: FieldSnapshot(bundleID: chrome, role: "AXGroup",
+                                                                                    valueSettable: true)), "contenteditable")
+    check(BrowserHoldGuard.allowsStart(frontBundleID: chrome, field: nil), "без доступа AX — как раньше")
+    check(BrowserHoldGuard.allowsStart(frontBundleID: "com.apple.Notes", field: FieldSnapshot(bundleID: "com.apple.Notes")),
+          "не браузер — без изменений")
+
+    // Быстрый выключатель причёсывания в меню (2026-11-09): выключить и вернуть тот же бэкенд.
+    var polish = PolishSettings(backend: .claude, cloudConsent: true)
+    check(polish.quickToggleAvailable)
+    polish.setQuickEnabled(false)
+    equal(polish.backend, .off); equal(polish.pausedBackend, .claude); equal(polish.quickBackend, .claude)
+    check(polish.quickToggleAvailable, "выключенное из меню — включается из меню")
+    check(polish.decide(bundleID: "com.apple.Notes", isAgent: false) == nil, "выключено — не причёсываем")
+    let saved = try! JSONDecoder().decode(PolishSettings.self, from: JSONEncoder().encode(polish))
+    equal(saved.pausedBackend, .claude, "переживает перезапуск")
+    polish.setQuickEnabled(true)
+    equal(polish.backend, .claude); equal(polish.pausedBackend, nil)
+    check(!PolishSettings().quickToggleAvailable, "никогда не включали — в меню строки нет")
+    var never = PolishSettings()
+    never.setQuickEnabled(true)
+    equal(never.backend, .off, "из меню облако без согласия не включается")
+
     // Машина: защёлка переводит запись в режим без рук, следующее нажатие останавливает.
     var m = DictationMachine(makeSessionID: { "L" })
     equal(m.minimumHold, 0.3, "H1: порог 0,3 с")

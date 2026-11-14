@@ -110,7 +110,10 @@ final class AgentToolsController {
         var written: [String] = []
         do {
             for step in pending.plan.writes {
-                let url = URL(fileURLWithPath: step.path)
+                // Настройки агента бывают ссылкой в dotfiles: пишем в настоящий файл, ссылку не заменяем.
+                guard let url = LinkedFile.target(of: URL(fileURLWithPath: step.path)) else {
+                    throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: step.path])
+                }
                 let current = try? Data(contentsOf: url)
                 let next: Data?
                 switch step.kind {

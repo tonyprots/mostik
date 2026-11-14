@@ -98,6 +98,8 @@ final class AppController {
     private var delivery: DeliveryController!
     /// Расшифровки, брошенные по Esc (H2): их текст уходит в историю как «отменено».
     private var abandonedSessions: Set<String> = []
+    /// Сессии, где вместо итога вставлен запасной черновик: их аудио не удаляем.
+    private var draftSessions: Set<String> = []
     /// Вставки, отменённые по Esc посреди вставки (A7).
     private var abortedInserts: Set<String> = []
 
@@ -126,6 +128,7 @@ final class AppController {
         let marks: [MeetingMarkPayload]
         let title: String?
         let attendees: [String]
+        /// Сколько раз задание ушло живому процессу (`MeetingRetryPolicy`).
         var attempts = 1
         /// false — повтор после нехватки памяти: без модели голосов (R3a).
         var diarize = true
@@ -170,6 +173,10 @@ final class AppController {
     /// Модели по кнопке: статус, загрузка, «Нужны модели» (П8, пункт 5) — `ModelsController.swift`.
     private var modelsController: ModelsController!
     private var engineGate = EngineRestartGate()
+    /// Номер рукопожатия: движок, упавший и поднявшийся посреди него, начинает новое, а прежнее замолкает.
+    private var handshakeRun = 0
+    /// Встреча, которая сейчас пишется. Состояние в списке — для интерфейса: по нему встречу не ищем (S12).
+    private var recordingMeeting: (id: String, folder: URL)?
     /// Падений движка за сеанс — в строку статуса и в «Проверку» (П8, пункт 6).
     private var engineCrashes = 0
 
@@ -208,6 +215,9 @@ final class AppController {
         recorder.onSilentInput = { [weak self] action in
             DispatchQueue.main.async { self?.silentInput(action) }
         }
+        recorder.onInputTrouble = { [weak self] trouble in
+            DispatchQueue.main.async { self?.inputTrouble(trouble) }
+        }
         hotkeys = HotkeyMonitor { [weak self] event in self?.hotkey(event) }
         voiceEdit = VoiceEditController(
             model: model, recorder: recorder, paster: paster, inspector: inspector,
@@ -224,7 +234,7 @@ final class AppController {
         modelsController.onDiarizationInstalled = { [weak self] in
             guard let self else { return }
             Task {
-                guard let hello = try? await self.engine.hello(),
+                guard let hello = try? await self.engine.hello(polishCLI: self.model.settings.polish.cli.rawValue),
                       case .object(let diarization)? = hello["diarization"] else { return }
                 self.upkeep.diarizationAvailable = diarization["available"]?.boolValue
             }
@@ -300,7 +310,8 @@ final class AppController {
         // Проверка обновлений всегда включена (решение автора); перезапуск после установки ждёт конца записи.
         updater = SparkleUpdater(isBusy: { [weak self] in
             guard let self else { return false }
-            return self.meetingRecorder != nil || self.hotkeys.isRecording
+            // И расшифровка с вставкой — тоже «занято»: перезапуск посреди неё терял диктовку.
+            return self.meetingRecorder != nil || self.hotkeys.isRecording || self.machine.currentSession != nil
         })
         model.updatesConfigurable = UpdatePolicy.showsUpdateLedgerLine(updater?.availability ?? .frameworkMissing)
         model.updatesCheckable = updater?.showsCheckItem ?? false
@@ -394,8 +405,26 @@ final class AppController {
         power?.stop()
         if meetingRecorder != nil { stopMeeting() }
         recorder.setWarm(false)
-        recorder.discard()
+        keepDictationOnQuit()
         engine.shutdownAndWait()
+    }
+
+    /// Выход посреди диктовки: звук и черновик остаются в истории («отменено»), а не пропадают.
+    private func keepDictationOnQuit() {
+        guard let id = machine.currentSession, !model.history.contains(where: { $0.id == id }) else {
+            recorder.discard()
+            return
+        }
+        guard let file = recorder.end() ?? session?.file else { return }
+        guard file.seconds >= 0.3 else {
+            try? FileManager.default.removeItem(at: file.url)
+            return
+        }
+        let entry = HistoryEntry(id: id, text: model.partialText, language: model.settings.language,
+                                 audioSeconds: file.seconds, audioPath: file.url.path,
+                                 outcome: "cancelled", verifier: "off")
+        _ = history.record(entry)
+        AppLog.shared.event("app", "quit mid-dictation: audio kept")
     }
 
     // MARK: движок
@@ -423,18 +452,29 @@ final class AppController {
     /// Перезапуск по одному: старый процесс сначала останавливается, и только потом
     /// поднимается новый — два Python с моделями одновременно не живут. Запрос во время
     /// перезапуска вливается в него; конфигурация берётся на момент старта нового.
+    ///
+    /// Новый клиент встаёт на место старого сразу (S7): пока старый процесс останавливается, команды
+    /// идут уже новому и ждут в нём запуска. Раньше они уходили умирающему: «запомнить слово» молча
+    /// терялось, диктовка стартовала в процессе, которому оставались секунды.
     private func restartEngine() {
         guard engineGate.begin() else { return }
         let old = engine
         old.onStatus = nil
         old.onEvent = nil
+        let fresh = EngineClient(config: Self.engineConfig(settings: model.settings, paths: paths))
+        fresh.expectStart()
+        engine = fresh
+        // Перезапуск — наш, а не вина встречи в очереди: её повтор после падения остаётся при ней.
+        for index in meetingQueue.indices {
+            meetingQueue[index].attempts = MeetingRetryPolicy.afterPlannedRestart(attempts: meetingQueue[index].attempts)
+        }
         model.engineStatus = .loading(L10n.isRussian ? "Перезапуск распознавания…" : "Restarting recognition…")
         AppLog.shared.event("engine", "restart requested")
         Task { [weak self] in
             await Task.detached { old.shutdownAndWait(timeout: 3) }.value
             guard let self else { return }
             self.engineGate.finish()
-            self.engine = EngineClient(config: Self.engineConfig(settings: self.model.settings, paths: self.paths))
+            fresh.reconfigure(Self.engineConfig(settings: self.model.settings, paths: self.paths))
             self.startEngine()
         }
     }
@@ -466,11 +506,15 @@ final class AppController {
     private func handshake() async {
         let ru = L10n.isRussian
         var missing: [String] = []
-        // Рукопожатие старого поколения после перезапуска замолкает, а не правит новый статус.
+        // Рукопожатие старого поколения после перезапуска замолкает, а не правит новый статус. То же —
+        // рукопожатие процесса, который упал и поднялся заново: у нового процесса оно своё.
         let generation = engineGate.generation
+        handshakeRun += 1
+        let run = handshakeRun
+        let current = { [unowned self] in self.engineGate.isCurrent(generation) && run == self.handshakeRun }
         do {
-            let hello = try await engine.hello()
-            guard engineGate.isCurrent(generation) else { return }
+            let hello = try await engine.hello(polishCLI: model.settings.polish.cli.rawValue)
+            guard current() else { return }
             if case .object(let models)? = hello["models"] {
                 missing = models.filter { $0.value.boolValue == false }.map(\.key).sorted()
                 upkeep.missingModels = missing
@@ -480,19 +524,32 @@ final class AppController {
             }
             if case .object(let backends)? = hello["polish"] {
                 var available: [String: Bool] = [:]
+                var reasons: [String: String] = [:]
                 for (name, value) in backends {
-                    if case .object(let status) = value { available[name] = status["available"]?.boolValue ?? false }
+                    if case .object(let status) = value {
+                        available[name] = status["available"]?.boolValue ?? false
+                        reasons[name] = status["reason"]?.stringValue
+                    }
                 }
                 model.polishAvailable = available
+                model.polishReasons = reasons
+                if case .object(let cloud)? = backends["claude"] {
+                    var found: [String: String] = [:]
+                    if case .object(let map)? = cloud["found"] {
+                        for (name, value) in map { found[name] = value.stringValue }
+                    }
+                    model.polishCLIFound = found
+                    model.polishCLIUsing = cloud["using"]?.stringValue
+                }
             }
         } catch {
-            guard engineGate.isCurrent(generation) else { return }
-            model.engineStatus = .failed(error.localizedDescription)
+            guard current() else { return }
+            handshakeFailed(error, message: error.localizedDescription, retry: true)
             return
         }
         // Первый запуск без моделей (и без сети) — не ошибка движка, а экран «Нужны модели» (П8, пункт 5).
         let needed = await modelsController.refresh(language: model.settings.language)
-        guard engineGate.isCurrent(generation) else { return }
+        guard current() else { return }
         if !needed.isEmpty {
             model.engineStatus = .failed(modelsController.blockedText(needed))
             return
@@ -501,17 +558,17 @@ final class AppController {
         do {
             _ = try await engine.warmup(language: model.settings.language,
                                         polishBackend: WarmupPolicy.polishBackendToWarm(model.settings))
-            guard engineGate.isCurrent(generation) else { return }
+            guard current() else { return }
             model.engineStatus = .ready
             AppLog.shared.event("engine", "ready")
             upkeep.warmed()
             refreshFallbackProject()
         } catch {
-            guard engineGate.isCurrent(generation) else { return }
+            guard current() else { return }
             let tail = missing.isEmpty ? "" : (ru ? " · нет моделей: " : " · missing models: ") + missing.joined(separator: ", ")
-            model.engineStatus = .failed(error.localizedDescription + tail)
+            handshakeFailed(error, message: error.localizedDescription + tail, retry: false)
         }
-        guard engineGate.isCurrent(generation) else { return }
+        guard current() else { return }
         if let state = power?.current { _ = try? await engine.power(state) }
         await reloadGlossary()
         await glossaryLearning.engineReady()
@@ -522,6 +579,23 @@ final class AppController {
         await meetingFolders.migrate()
         await speakersController.engineReady()
         await polishExtras.engineReady()
+    }
+
+    /// Рукопожатие не удалось. Процесс умер — клиент перезапускает его сам, и статус ведёт он: «ошибка»
+    /// поверх его «перезапуск через…» не ставится. Процесс жив, но `hello` остался без ответа —
+    /// перезапустить его может только вторая ступень (S17); раньше статус оставался «ошибка» навсегда.
+    private func handshakeFailed(_ error: Error, message: String, retry: Bool) {
+        let gone = (error as? EngineError) == .crashed || (error as? EngineError) == .notRunning
+        switch EngineRecovery.handshakeFailure(processGone: gone) {
+        case .leaveToClient:
+            AppLog.shared.event("engine", "handshake interrupted: process gone")
+        case .secondStage:
+            AppLog.shared.event("engine", "handshake failed")
+            model.engineStatus = .failed(message)
+            guard retry else { return }
+            failMeetings(message)
+            upkeep.engineFailed()
+        }
     }
 
     private func engineEvent(_ event: EngineEvent) {
@@ -542,7 +616,10 @@ final class AppController {
             if task == "meeting_ai" { meetingAI.progress(stage: stage, done: done, total: total); return }
             // Длинная диктовка ждёт вторую модель: полоса в плашке и «Вставить сразу».
             if task == "dictation" {
-                if model.hud == .transcribing, total > 0 { model.verifyProgress = min(Double(done) / Double(total), 1) }
+                if model.hud == .transcribing, total > 0 {
+                    model.verifyStage = stage
+                    model.verifyProgress = min(Double(done) / Double(total), 1)
+                }
                 return
             }
             guard let first = meetingQueue.first else { return }
@@ -586,8 +663,77 @@ final class AppController {
             } else {
                 NSLog("Mostik engine error \(code): \(message)")
             }
+        case .polished(let sid, let text, let polished, let status):
+            latePolished(sid, text: text, polished: polished, status: status)
         case .final, .reply:
             break
+        }
+    }
+
+    // MARK: причёсывание после вставки
+
+    /// Вставка ушла сырой, причёсанный текст ещё в пути (`polish.late`). `polished` успел раньше
+    /// записи в историю — ждёт её здесь же.
+    private struct LateFix {
+        var replaceable: Bool?
+        var arrived: (text: String, polished: Bool, status: String?)?
+    }
+    private var lateFixes: [String: LateFix] = [:]
+
+    private func lateInserted(_ id: String, replaceable: Bool) {
+        var fix = lateFixes[id] ?? LateFix()
+        fix.replaceable = replaceable
+        lateFixes[id] = fix
+        if let arrived = fix.arrived { applyLatePolish(id, arrived.text, polished: arrived.polished, status: arrived.status) }
+    }
+
+    private func latePolished(_ id: String, text: String, polished: Bool, status: String?) {
+        var fix = lateFixes[id] ?? LateFix()
+        guard fix.replaceable != nil else {
+            fix.arrived = (text, polished, status)
+            lateFixes[id] = fix
+            // Сессия брошена (Esc, сбой) — записи не будет, ждать нечего.
+            if session?.id != id { lateFixes[id] = nil }
+            return
+        }
+        applyLatePolish(id, text, polished: polished, status: status)
+    }
+
+    private func applyLatePolish(_ id: String, _ text: String, polished: Bool, status: String?) {
+        let replaceable = lateFixes.removeValue(forKey: id)?.replaceable == true
+        let ru = L10n.isRussian
+        let backend = PolishBackend.claude.rawValue
+        let polishedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard polished, !polishedText.isEmpty else {
+            let lasting = status.map(PolishNotice.isLasting) ?? false
+            if let status, lasting {
+                model.polishAvailable[backend] = false
+                if status == "auth" { model.polishReasons[backend] = "login" }
+            }
+            AppLog.shared.event("polish", "late \(status ?? "nil") — text stays unpolished")
+            // Плашку новой записи не перебиваем; итог «причёсываю…» сменяем на причину.
+            if let notice = PolishNotice.suffix(status: status, short: false), !lateHUDBusy {
+                delivery.notice(ru ? "Текст вставлен как распознан" : "Inserted as recognized", notice)
+            }
+            return
+        }
+        model.polishAvailable[backend] = true; model.polishReasons[backend] = nil
+        guard var entry = model.history.first(where: { $0.id == id }) else { return }
+        // В истории — причёсанный текст, сырой остаётся в `rawText` («Вставить сырой»).
+        if entry.rawText == nil { entry.rawText = entry.text }
+        entry.text = polishedText
+        replaceEntry(entry)
+        AppLog.shared.event("polish", "late done replaceable=\(replaceable)")
+        guard replaceable else { return }
+        // Отправил или дописал раньше — подмены нет и карточки тоже: причёсанный текст в истории.
+        delivery.queueFix(entryID: id, text: polishedText, summary: ru ? "Причёсано" : "Polished", quiet: true)
+    }
+
+    /// Идёт новая запись или расшифровка — карточку о прошлой вставке не показываем.
+    private var lateHUDBusy: Bool {
+        switch model.hud {
+        case .recording, .transcribing: true
+        default: false
         }
     }
 
@@ -596,6 +742,17 @@ final class AppController {
     private func hotkey(_ event: HotkeyMonitor.Event) {
         // Идёт голосовая правка (D5): Recorder занят, новая диктовка не начинается.
         if voiceEdit.isActive, event == .holdBegan || event == .togglePressed { return }
+        // В браузере удержание без поля ввода — не диктовка (⌘+клик по вкладке, 2026-11-09).
+        // Только старт: остановку записи без рук тем же нажатием не трогаем.
+        if event == .holdBegan, machine.state == .idle, let front = NSWorkspace.shared.frontmostApplication,
+           let bundleID = front.bundleIdentifier, BrowserHoldGuard.browsers.contains(bundleID) {
+            let field = FocusedField.snapshot(readValue: false)
+            if !BrowserHoldGuard.allowsStart(frontBundleID: bundleID, field: field) {
+                AppLog.shared.event("keys", "holdBegan ignored: browser without text field (\(field?.role ?? "?") in \(bundleID))")
+                hotkeys.holdIgnored()
+                return
+            }
+        }
         let now = ProcessInfo.processInfo.systemUptime
         let input: DictationInput
         switch event {
@@ -740,6 +897,11 @@ final class AppController {
         // ⌃⌘K (D6): команду разбирает движок по тексту как сказано — без причёсывания.
         let command = voiceIntents.consumeArmed()
         if command { polishPlan.polish = nil }
+        // Причёсывание после вставки (2026-10-21): сырой текст — сразу, причёсанный подменяет его следом.
+        if let request = polishPlan.polish,
+           PolishRequest.allowsLate(request, autoEnter: polishPlan.autoEnter, command: command) {
+            polishPlan.polish?.late = true
+        }
         let polish = polishPlan.polish
         // Снимок поля — после старта записи (R1), но до `start` движку: звук ждёт в шлюзе.
         let startField = FocusedField.snapshot()
@@ -805,6 +967,17 @@ final class AppController {
     }
 
     /// Залипший микрофон (`SilentInputWatch`): запись идёт, Recorder переподключает вход — говорим, что происходит.
+    /// Вход не запустился посреди записи (сменилось устройство): рекордер повторяет сам, плашка говорит, что происходит.
+    private func inputTrouble(_ trouble: Recorder.InputTrouble) {
+        AppLog.shared.event("mic", "input trouble: \(trouble)")
+        let ru = L10n.isRussian
+        switch trouble {
+        case .retrying: model.micTrouble = ru ? "Переподключаю микрофон…" : "Reconnecting the mic…"
+        case .lost: model.micTrouble = ru ? "Микрофон не отвечает" : "The mic isn’t responding"
+        case .recovered: model.micTrouble = nil
+        }
+    }
+
     private func silentInput(_ action: SilentInputWatch.Action) {
         AppLog.shared.event("mic", "silent input: \(action)")
         let ru = L10n.isRussian
@@ -844,6 +1017,10 @@ final class AppController {
     private func toggleDictationPause() {
         guard model.hud == .recording, var clock = dictationClock else { return }
         let now = Date().timeIntervalSince1970
+        // Пауза при удержании: дальше запись идёт без рук, иначе отпускание клавиши тут же отправит текст.
+        if !clock.isPaused, case .recording(_, _, false) = machine.state {
+            apply(machine.handle(.latch))
+        }
         if clock.isPaused { clock.resume(at: now) } else { clock.pause(at: now) }
         dictationClock = clock
         recorder.isPaused = clock.isPaused
@@ -915,6 +1092,7 @@ final class AppController {
                         return
                     }
                     result = fallback
+                    self.draftSessions.insert(id)  // текст — только черновик: аудио для повтора сохраняем
                 }
             }
             if self.abandonedSessions.remove(id) != nil { self.keepCancelled(id: id, result: result); return }
@@ -1099,7 +1277,8 @@ final class AppController {
 
         let latency = current.stoppedAt.map { Date().timeIntervalSince($0) * 1000 } ?? result.timings.totalMs
         // Аудио остаётся при любом сбое: не вставлено, в буфере, отменено (R5).
-        let keepFile = settings.keepAudio || outcome != .inserted || aborted
+        let draftOnly = draftSessions.remove(id) != nil
+        let keepFile = settings.keepAudio || outcome != .inserted || aborted || draftOnly
         if !keepFile { try? FileManager.default.removeItem(at: file.url) }
         var entry = HistoryEntry(id: id, text: text, insertedText: outcome == .inserted ? report.sent : composed,
                                  doubts: result.doubts,
@@ -1133,10 +1312,31 @@ final class AppController {
         if route.submit || scenarioEnter, !queuedForAgent, outcome == .inserted, report.check != .notInserted {  // polishExtras: Enter из сценария
             await agentVoice.submit(route, bundleID: front.bundleID)
         }
+        // Полировку просили, а текст ушёл без неё — сказать в плашке; стойкий сбой (вход, модель) —
+        // отметить и в Настройках до следующей удачной полировки.
+        let polishNotice = current.polishPlan?.polish != nil ? PolishNotice.suffix(status: result.polishStatus, short: result.doubts.count > 0) : nil
+        // Причёсанный текст придёт следом (`polished`): заменить вставку можно, только если ушла она
+        // как есть — обычным ⌘V, без Enter, очереди агенту, tmux и буфера.
+        let latePending = result.polishStatus == "pending"
+        if latePending {
+            let replaceable = outcome == .inserted && route.pane == nil && !route.submit && !scenarioEnter
+                && menuReason == nil && !queuedForAgent && streamed == nil && report.check != .notInserted
+            lateInserted(id, replaceable: replaceable)
+        }
+        if let backend = current.polishPlan?.polish?.backend.rawValue, let status = result.polishStatus {
+            if status == "done" { model.polishAvailable[backend] = true; model.polishReasons[backend] = nil }
+            else if PolishNotice.isLasting(status) {
+                model.polishAvailable[backend] = false
+                if status == "auth" { model.polishReasons[backend] = "login" }
+            }
+            if polishNotice != nil { AppLog.shared.event("polish", "\(backend): \(status) — text inserted unpolished") }
+        }
         switch outcome {
         case .inserted:
             var summary = agentVoice.summary(for: route) ?? (route.submit ? (ru ? "Отправлено" : "Sent") : (ru ? "Вставлено" : "Inserted"))
             if report.check == .unknown, route.pane == nil { summary += ru ? " · копия в буфере" : " · copy on clipboard" }
+            if let notice = polishNotice { summary += " · " + notice }
+            if latePending, lateFixes[id]?.replaceable == true { summary += ru ? " · причёсываю…" : " · polishing…" }
             // Правка словаря без сомнений — «поправить слово ›» в той же плашке (L2), не отдельная карточка.
             let spelling = LearnPromptPolicy.showsSpellingChip(doubts: shownDoubts, corrections: result.corrections.count) ? id : nil
             // Полная полоса «Сверяю» видна мгновение, прежде чем плашка сменится итогом.
@@ -1150,7 +1350,8 @@ final class AppController {
             delivery.notice(ru ? "Курсор не в текстовом поле" : "Cursor isn't in a text field",
                             ru ? "Текст в буфере · ⌘V" : "Text on clipboard · ⌘V")
         case .clipboard(let reason) where MenuVoice.clipboardSummary(reason) != nil:
-            if ownsHUD(id) { model.hud = .done(summary: MenuVoice.clipboardSummary(reason) ?? "", doubts: shownDoubts, agent: agent) }
+            let summary = (MenuVoice.clipboardSummary(reason) ?? "") + (polishNotice.map { " · " + $0 } ?? "")
+            if ownsHUD(id) { model.hud = .done(summary: summary, doubts: shownDoubts, agent: agent) }
         case .clipboard(let reason):
             let summary = reason == "focus_changed"
                 ? (ru ? "В буфере — окно сменилось" : "On clipboard — window changed")
@@ -1275,6 +1476,9 @@ final class AppController {
 
     private func applySettings(_ proposed: MostikSettings) {
         let old = model.settings
+        // Claude или Codex сменили в Настройках: движок узнаёт выбор и отвечает, что из них готово.
+        let cliChanged = old.polish.cli != proposed.polish.cli
+        defer { if cliChanged { Task { await self.handshake() } } }
         // Приватность: смена бэкенда сбрасывает облачное согласие встреч; снимок согласий — в EngineClient.
         var new = MeetingCloudPolicy.reconcile(old: old, new: proposed)
         if MeetingHookTrust.isCommandEdit(old: old.meetingHook, new: new.meetingHook) {
@@ -1647,8 +1851,10 @@ final class AppController {
 
     private func addMeetingMark(_ text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, meetingRecorder != nil, let clock = meetingClock else { return }
+        guard !text.isEmpty, let rec = meetingRecorder, let clock = meetingClock else { return }
         model.meetingMarks.append(AppModel.MeetingMark(at: clock.elapsed(at: Date().timeIntervalSince1970), text: text))
+        // Сразу на диск: падение или выход до конца записи пометки не теряет.
+        MeetingMarksFile.save(model.meetingMarks.map { MeetingMarkPayload(at: $0.at, text: $0.text) }, in: rec.folder)
     }
 
     private func toggleMeetingPause() {
@@ -1678,6 +1884,8 @@ final class AppController {
             guard let result = try? await engine.transcribeFile(path: path, language: entry.language,
                                                                   project: self.model.currentProject,
                                                                   sources: settings.extraSources) else { return }
+            // Пустой повтор (тишина, сбой модели) не затирает текст, который уже был.
+            guard !result.insertable.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             var updated = entry
             updated.text = result.insertable.text
             updated.rawText = result.rawTextForHistory
@@ -1730,6 +1938,16 @@ final class AppController {
         rec.onLevels = { [weak self] mic, system in
             MainActor.assumeIsolated { self?.pushMeetingLevel(max(mic, system)) }
         }
+        // Диск перестал принимать звук (нет места, том отключён) — говорим сразу, а не после встречи.
+        rec.onWriteFailure = { [weak self] why in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                AppLog.shared.error("meeting", "track write failed: \(why)")
+                self.model.hud = .error(L10n.isRussian ? "Запись встречи не сохраняется на диск — проверьте свободное место"
+                                                        : "The meeting isn’t being saved to disk — check free space")
+                self.scheduleHUDHide(after: 6)
+            }
+        }
         do { try rec.start(continuing: continuation?.segments ?? [], offset: offset) } catch {
             model.hud = .error((L10n.isRussian ? "Встреча не записывается: " : "Meeting recording failed: ")
                                + error.localizedDescription)
@@ -1777,6 +1995,7 @@ final class AppController {
         } else {
             model.meetings.insert(item, at: 0)
         }
+        recordingMeeting = (previous?.id ?? item.id, folder)
         model.meetingElapsed = offset
         meetingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -1804,7 +2023,11 @@ final class AppController {
         meetingEvent = nil
         model.meetingMarks = []
         model.meetingPaused = false
-        guard let item = model.meetings.first(where: { $0.state == .recording }) else { return }
+        // Встречу знаем сами: строку списка за время записи мог заменить скан папок (S12).
+        let recording = recordingMeeting ?? model.meetings.first(where: { $0.state == .recording }).map { ($0.id, $0.folder) }
+        recordingMeeting = nil
+        guard let recording else { return }
+        let item = (id: recording.0, folder: recording.1)
         meetingLive.recordingStopped(folder: item.folder, duration: duration)
         meetingFolders.recordingStopped(folder: item.folder, ended: now, duration: duration)
         updateMeeting(item.id) {
@@ -1816,22 +2039,24 @@ final class AppController {
         // Участники без владельца календаря: движок подставит имя, только если такой участник один (M2).
         let title = event?.title.isEmpty == false ? event?.title : nil
         let attendees = event?.others ?? []
+        let live = engine.isRunning
         let command = engine.meeting(mic: tracks.mic, system: tracks.system, outDir: item.folder,
                                      language: language, speakers: nil, marks: marks, title: title, attendees: attendees)
         meetingQueue.append(MeetingJob(command: command, meeting: item.id, mic: tracks.mic, system: tracks.system,
                                        outDir: item.folder, language: language, marks: marks, title: title,
-                                       attendees: attendees))
+                                       attendees: attendees, attempts: MeetingRetryPolicy.initialAttempts(engineLive: live)))
         // Движок окончательно не запустился — команда никуда не ушла, не держим «В очереди» вечно.
         if case .failed(let message) = model.engineStatus, !engine.isRunning { failMeetings(message) }
     }
 
     /// Движок упал посреди расшифровки: процесс новый, его очередь встреч пуста — шлём заново.
     /// Один повтор: встреча, которая сама роняет движок, не должна гонять его по кругу.
+    /// Задание, отданное, пока процесса не было, уходит здесь впервые и повтора не тратит (S7).
     private func resendMeetings() {
         guard !meetingQueue.isEmpty else { return }
         var kept: [MeetingJob] = []
         for var job in meetingQueue {
-            guard job.attempts < 2 else {
+            guard MeetingRetryPolicy.mayResend(attempts: job.attempts) else {
                 updateMeeting(job.meeting) { $0.state = .failed(L10n.isRussian ? "Расшифровка прервалась из-за сбоя" : "Transcription stopped after a crash") }
                 continue
             }
@@ -1847,19 +2072,22 @@ final class AppController {
     /// Брошенная встреча (M12): приложение упало посреди записи или до конца расшифровки — в очередь заново.
     private func enqueueMeeting(folder: URL, title: String?) {
         let id = folder.lastPathComponent
-        guard !meetingQueue.contains(where: { $0.meeting == id }), meetingRecorder == nil || model.meetings.first(where: { $0.state == .recording })?.id != id else { return }
+        guard !meetingQueue.contains(where: { $0.meeting == id }), recordingMeeting?.id != id else { return }
         let mic = folder.appendingPathComponent("mic.wav")
         let system = folder.appendingPathComponent("system.wav")
         let language = model.settings.language
+        let marks = MeetingMarksFile.load(from: folder)  // пометки брошенной записи — с диска
+        let live = engine.isRunning
         let command = engine.meeting(mic: mic, system: system, outDir: folder, language: language, speakers: nil,
-                                     marks: [], title: title, attendees: [])
+                                     marks: marks, title: title, attendees: [])
         meetingQueue.append(MeetingJob(command: command, meeting: id, mic: mic, system: system, outDir: folder,
-                                       language: language, marks: [], title: title, attendees: []))
+                                       language: language, marks: marks, title: title, attendees: [],
+                                       attempts: MeetingRetryPolicy.initialAttempts(engineLive: live)))
         updateMeeting(id) { $0.state = .processing(L10n.isRussian ? "Дорасшифровка" : "Resuming"); $0.progress = nil }
     }
 
     /// Повтор после нехватки памяти на модели голосов (R3a): та же встреча, собеседники одним голосом.
-    /// Пометки и название — из упавшего задания этой сессии; после перезапуска — без них, как при дорасшифровке.
+    /// Пометки и название — из упавшего задания этой сессии; после перезапуска пометки — из `marks.json`.
     private func retryMeetingWithoutVoices(_ id: String) { retryMeeting(id, diarize: false) }
 
     /// Повтор упавшей расшифровки (кнопка «Повторить расшифровку») или без голосов после нехватки памяти.
@@ -1870,13 +2098,15 @@ final class AppController {
         let mic = failed?.mic ?? item.folder.appendingPathComponent("mic.wav")
         let system = failed?.system ?? item.folder.appendingPathComponent("system.wav")
         let language = failed?.language ?? model.settings.language
-        let marks = failed?.marks ?? []
+        let marks = failed?.marks ?? MeetingMarksFile.load(from: item.folder)
         let title = failed?.title ?? item.title
         let attendees = failed?.attendees ?? []
+        let live = engine.isRunning
         let command = engine.meeting(mic: mic, system: system, outDir: item.folder, language: language, speakers: nil,
                                      marks: marks, title: title, attendees: attendees, diarize: diarize)
         var job = MeetingJob(command: command, meeting: id, mic: mic, system: system, outDir: item.folder,
-                             language: language, marks: marks, title: title, attendees: attendees)
+                             language: language, marks: marks, title: title, attendees: attendees,
+                             attempts: MeetingRetryPolicy.initialAttempts(engineLive: live))
         job.diarize = diarize
         meetingQueue.append(job)
         updateMeeting(id) {
@@ -1919,10 +2149,13 @@ final class AppController {
             let (items, transcripts) = Self.scanMeetings(root: root)
             await MainActor.run {
                 for (id, lines) in transcripts { self.model.meetingTranscripts[id] = lines }
-                // Встречи, начатые за время чтения, не теряем.
-                let known = Set(items.map(\.id))
-                let live = self.model.meetings.filter { !known.contains($0.id) }
-                self.model.meetings = (items + live).sorted { $0.startedAt > $1.startedAt }
+                // Встречи, начатые за время чтения, не теряем; идущую запись и встречи в очереди расшифровки
+                // скан не перетирает: на диске они выглядят «не расшифрованными» (S12).
+                let queued = Set(self.meetingQueue.map(\.meeting))
+                let recording = self.recordingMeeting?.id
+                self.model.meetings = MeetingListMerge.merge(scanned: items, current: self.model.meetings, id: \.id) {
+                    $0.id == recording || queued.contains($0.id)
+                }.sorted { $0.startedAt > $1.startedAt }
             }
         }
     }
@@ -2178,6 +2411,16 @@ final class AppController {
         model.onAddMeetingMark = { [weak self] text in self?.addMeetingMark(text) }
         model.onToggleMeetingPause = { [weak self] in self?.toggleMeetingPause() }
         model.onToggleDictationPause = { [weak self] in self?.toggleDictationPause() }
+        model.onFinishDictation = { [weak self] in
+            guard let self, case .recording = self.machine.state else { return }
+            AppLog.shared.event("keys", "hud finish state=\(self.machine.state)")
+            self.apply(self.machine.handle(.finish(at: ProcessInfo.processInfo.systemUptime)))
+        }
+        model.onCancelDictation = { [weak self] in
+            guard let self, case .recording = self.machine.state else { return }
+            AppLog.shared.event("keys", "hud cancel state=\(self.machine.state)")
+            self.apply(self.machine.handle(.abort))
+        }
         model.onAcknowledgeConsent = { [weak self] in MenuBarPanel.dismiss(); self?.acknowledgeConsent() }
         model.onMenuVoice = { [weak self] in self?.menuVoice() }
     }

@@ -367,6 +367,9 @@ struct MeetingDetail: View {
                 .buttonStyle(.mostik(.secondary, compact: true))
                 .help(L("Открыть расшифровку в редакторе текста", "Open the transcript in a text editor"))
             }
+            if meeting.state == .done, let url = meeting.transcriptPath {
+                CopyTranscriptLinkButton(url: url, extras: model.meetingExtras, meeting: meeting.id)
+            }
             MeetingMoreMenu(model: model, meeting: meeting)
         }
     }
@@ -705,6 +708,44 @@ struct IndeterminateBar: View {
         return Capsule().fill(Palette.accent)
             .frame(width: w)
             .offset(x: -w + (width + w) * phase)
+    }
+}
+
+/// Значок-ссылка в шапке встречи: копирует `file://`-ссылку на `transcript.md`, чтобы вставить
+/// её агенту, в чат или заметку. Своей схемы ссылок у Mostik нет, поэтому ссылка — на файл.
+/// После клика значок на 1,5 с сменяется галочкой.
+///
+/// У встречи «только на этом Mac» кнопки нет: ссылку вставляют агенту, а он прочёл бы файл мимо
+/// всех шлюзов приватности. Файл по-прежнему открывается кнопкой «Открыть файлом».
+struct CopyTranscriptLinkButton: View {
+    let url: URL
+    @ObservedObject var extras: MeetingExtrasModel
+    let meeting: String
+    @State private var copied = false
+
+    private var help: String { L("Скопировать ссылку на расшифровку", "Copy link to transcript") }
+
+    var body: some View {
+        if !extras.sensitive.contains(meeting) { button }
+    }
+
+    private var button: some View {
+        Button {
+            copyToPasteboard(url.absoluteString)
+            withAnimation(Motion.quick) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation(Motion.quick) { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "link")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(copied ? Palette.accent : Palette.inkSecondary)
+                .frame(width: DS.hit, height: DS.hit)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(copied ? L("Скопировано", "Copied") : help)
+        .accessibilityLabel(copied ? L("Скопировано", "Copied") : help)
     }
 }
 

@@ -61,6 +61,7 @@ public final class FrontAppInspector: @unchecked Sendable {
     /// Имена всех процессов: короткое имя и последний компонент пути к бинарнику.
     /// У node, bun и deno имя — сам интерпретатор, поэтому агента (`claude`, `codex`,
     /// `gemini` из npm) узнаём по argv через `KERN_PROCARGS2` (`ProjectResolver.agentName`).
+    /// У нативной сборки Claude Code имя и путь — номер версии, агент виден только в argv[0] (S5).
     static func processNames(agentNames: Set<String> = []) -> Set<String> {
         let count = proc_listallpids(nil, 0)
         guard count > 0 else { return [] }
@@ -82,7 +83,7 @@ public final class FrontAppInspector: @unchecked Sendable {
                 names.insert(name)
             }
             var entry = ProcessEntry(pid: pid, ppid: 0, name: name, path: path)
-            if !agentNames.isEmpty, ProjectResolver.isInterpreter(entry) {
+            if !agentNames.isEmpty, ProjectResolver.wantsArgs(entry, names: agentNames) {
                 entry.args = ProjectDetector.args(pid: pid)
                 if let agent = ProjectResolver.agentName(entry, names: agentNames) { names.insert(agent) }
             }

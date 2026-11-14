@@ -123,26 +123,28 @@ final class CallSpeakerObserver {
         let raw = AXTreeDump.enabled
         queue.async { [weak self] in
             if let enable { Self.enableWebAccessibility(pid: enable) }
-            let (snapshot, descriptions) = Self.snapshot(target, keepRaw: raw)
+            let (snapshot, descriptions, origin) = Self.snapshot(target, keepRaw: raw)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.busy = false
                     guard self.timer != nil, self.target == target else { return }
                     if raw { self.logRaw(descriptions, at: at) }
-                    self.observe(snapshot, source: target.source, at: at)
+                    self.observe(snapshot, source: target.source, at: at, learnsName: origin != .unknown)
                 }
             }
         }
     }
 
-    private func observe(_ snapshot: ZoomSpeakers.Snapshot, source: String, at: Double) {
+    /// `learnsName: false` — страница браузера, адрес которой не удалось сверить: своё имя с неё
+    /// в Настройки и в память не идёт.
+    private func observe(_ snapshot: ZoomSpeakers.Snapshot, source: String, at: Double, learnsName: Bool = true) {
         var writer = writer(for: source)
         let line = writer.observe(snapshot, at: at)
         writers[source] = writer
         if let line { append(line) }
         // Узнанное своё имя — сразу в память: следующая встреча узнает меня с первой секунды.
-        if let name = writer.learnedName, name != saved {
+        if learnsName, let name = writer.learnedName, name != saved {
             saved = name
             ZoomSelfNames.remember(name)
             onLearnedName(name)
@@ -228,14 +230,27 @@ final class CallSpeakerObserver {
         try? handle?.write(contentsOf: Data((line + "\n").utf8))
     }
 
-    nonisolated static func snapshot(_ target: Target, keepRaw: Bool = false) -> (ZoomSpeakers.Snapshot, [String]) {
+    /// Третье значение — чья страница (`WebCallSpeakers.Origin`); у Zoom и клиента Телемоста — `.verified`:
+    /// их узнают по bundle id, а не по заголовку.
+    nonisolated static func snapshot(_ target: Target, keepRaw: Bool = false)
+        -> (ZoomSpeakers.Snapshot, [String], WebCallSpeakers.Origin) {
         switch target {
-        case .zoom(let pid): return zoomSnapshot(pid: pid, keepRaw: keepRaw)
+        case .zoom(let pid):
+            let (snapshot, raw) = zoomSnapshot(pid: pid, keepRaw: keepRaw)
+            return (snapshot, raw, .verified)
         case .web(let pid, let kind, let window):
-            let snapshot = webTree(pid: pid, window: window).map { WebCallSpeakers.snapshot($0, kind: kind) }
-                ?? ZoomSpeakers.Snapshot(tiles: [])
+            var origin = WebCallSpeakers.Origin.verified
+            var tree = webTree(pid: pid, window: window)
+            // Окно браузера выбрано по заголовку, а заголовок задаёт страница: сверяем адрес.
+            if window != nil, let found = tree {
+                let screened = WebCallSpeakers.screened(found, kind: kind,
+                                                         extraTelemostDomains: UserDefaults.standard.stringArray(forKey: "telemost.extraDomains") ?? [])
+                tree = screened.tree
+                origin = screened.origin
+            }
+            let snapshot = tree.map { WebCallSpeakers.snapshot($0, kind: kind) } ?? ZoomSpeakers.Snapshot(tiles: [])
             let raw = keepRaw ? snapshot.tiles.map { "\($0.name)\($0.active ? " [active]" : "")\($0.isSelf ? " [self]" : "")" } : []
-            return (snapshot, raw)
+            return (snapshot, raw, origin)
         }
     }
 
@@ -286,6 +301,10 @@ final class CallSpeakerObserver {
             if ["AXGroup", "AXGenericElement", "AXList", "AXWebArea"].contains(role) {
                 result.classes = AX.value(element, "AXDOMClassList") as? [String] ?? []
             }
+            if role == "AXWebArea" {
+                let url = AX.value(element, "AXURL")
+                result.url = (url as? URL)?.absoluteString ?? (url as? String)
+            }
             if ["AXList", "AXGroup", "AXRow", "AXCell"].contains(role) {
                 result.label = AX.string(element, kAXDescriptionAttribute) ?? AX.string(element, kAXTitleAttribute)
             }
@@ -297,6 +316,39 @@ final class CallSpeakerObserver {
             return result
         }
         return WebCallSpeakers.Node(role: "AXApplication", children: windows.map { node($0, 1) })
+    }
+}
+
+/// Идёт ли конспект в десктопном Телемосте: ищем кнопку ИИ в окне звонка (`TelemostSummary`).
+/// Веб-области (мессенджер) не обходим. nil — Телемост не запущен, кнопки нет или подпись непонятна.
+enum TelemostSummaryProbe {
+    nonisolated static func isOn() -> Bool? {
+        guard AXIsProcessTrusted(),
+              let app = NSRunningApplication.runningApplications(withBundleIdentifier: CallSpeakerObserver.telemostBundleID).first
+        else { return nil }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.2)
+        var count = 0
+        func find(_ element: AXUIElement, _ depth: Int) -> AXUIElement? {
+            count += 1
+            let role = AX.string(element, kAXRoleAttribute)
+            if role == "AXButton", AX.string(element, kAXIdentifierAttribute)?.hasSuffix(TelemostSummary.buttonSuffix) == true {
+                return element
+            }
+            guard role != "AXWebArea", depth < CallSpeakerObserver.webMaxDepth else { return nil }
+            for child in AX.children(element) {
+                guard count < CallSpeakerObserver.webMaxNodes else { return nil }
+                if let hit = find(child, depth + 1) { return hit }
+            }
+            return nil
+        }
+        for window in AX.windows(root) {
+            if let button = find(window, 1) {
+                return TelemostSummary.isOn(title: AX.string(button, kAXTitleAttribute),
+                                            description: AX.string(button, kAXDescriptionAttribute))
+            }
+        }
+        return nil
     }
 }
 

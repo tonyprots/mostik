@@ -73,7 +73,7 @@ public struct VoiceIntentReply: Equatable, Sendable {
                   title: intent["title"]?.stringValue ?? "",
                   start: intent["start"]?.stringValue,
                   allDay: intent["all_day"]?.boolValue ?? false,
-                  minutes: Int(intent["minutes"]?.doubleValue ?? 30),
+                  minutes: intent["minutes"]?.intValue ?? 30,
                   when: intent["when"]?.stringValue ?? "",
                   whenMissing: intent["when_missing"]?.boolValue ?? false,
                   to: intent["to"]?.stringValue ?? "",

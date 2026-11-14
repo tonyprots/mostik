@@ -93,6 +93,31 @@ public enum WarmMicPolicy {
         }
     }
 
+    /// Вход не запустился (устройство ещё перестраивается, старый движок привязан к ушедшему
+    /// входу): повторяем на новом движке с растущей паузой. Раньше сбой только писался в журнал —
+    /// тёплый микрофон не возвращался, а идущая запись молча умирала.
+    public struct Retry: Equatable, Sendable {
+        public static let delays: [TimeInterval] = [0.3, 1, 2.5]
+        public private(set) var attempt = 0
+        /// Номер последнего запланированного повтора: сработать должен только он.
+        public private(set) var generation = 0
+
+        public init() {}
+
+        /// Запланировать повтор: пауза и номер для таймера; nil — попытки кончились (счёт сброшен).
+        public mutating func next() -> (delay: TimeInterval, generation: Int)? {
+            generation += 1
+            guard attempt < Self.delays.count else { attempt = 0; return nil }
+            defer { attempt += 1 }
+            return (Self.delays[attempt], generation)
+        }
+
+        /// Вход запустился (повтором или иначе): ждущие таймеры больше не нужны.
+        public mutating func succeeded() { attempt = 0; generation += 1 }
+
+        public func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
+    }
+
     public static func decide(_ s: State) -> Action {
         let deviceChanged = s.boundDevice != nil && s.currentDevice != nil && s.boundDevice != s.currentDevice
         let needsAudio = s.recording || s.warmActive

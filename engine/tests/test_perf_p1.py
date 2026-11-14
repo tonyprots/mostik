@@ -164,7 +164,13 @@ t_first = time.time()
 rest = sys.stdin.buffer.read()
 open({str(log)!r}, "a").write(json.dumps({{"first_byte": t_first, "stdin": (first + rest).decode()}}) + "\\n")
 time.sleep(max(0.0, {startup_s} - (time.time() - t0)))
-print("<polished>Привет, мир.</polished>")
+answer = "<polished>Привет, мир.</polished>"
+if "stream-json" in sys.argv:
+    json.loads((first + rest).decode())  # одно сообщение stream-json
+    print(json.dumps({{"type": "system", "subtype": "init"}}))
+    print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": answer}}))
+else:
+    print(answer)
 """, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return script, log
@@ -190,7 +196,8 @@ def test_claude_prespawn_sends_no_text_before_release(tmp_path):
 
     exe, log = _fake_claude(tmp_path, startup_s=1.0)
     backend = P.ClaudeCliBackend(str(exe))
-    assert getattr(backend, "prespawn", False)
+    # 2026-11-04: снова поднимает заранее — в stream-json CLI ждёт сообщение, а не выходит через 3 с.
+    assert backend.prespawn is True
     request = P.PolishRequest("", terms=["Zyxwab"])
     stream = backend.open_stream(request)
     _wait_started(log, 1.2)  # человек говорит
@@ -206,7 +213,9 @@ def test_claude_prespawn_sends_no_text_before_release(tmp_path):
     assert outcome.polished and outcome.text == "Привет, мир."
     data = _log_entries(log)[1]
     assert data["first_byte"] >= released, "первый байт stdin — только после отпускания"
-    assert "ну кракозябра э мир" in data["stdin"] and "Zyxwab" in data["stdin"], "термины — в сообщении"
+    message = json.loads(data["stdin"])["message"]["content"]
+    assert "ну кракозябра э мир" in message and "Zyxwab" in message, "термины — в сообщении stream-json"
+    assert "stream-json" in entries[0]["argv"], "заранее поднятый процесс — в stream-json"
     assert sum("started" in e for e in _log_entries(log)) == 1, "CLI не запускался второй раз"
     assert tail < 0.6, f"хвост {tail:.2f} с: запуск CLI уже прошёл, пока говорили"
 

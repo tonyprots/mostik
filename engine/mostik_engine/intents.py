@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import crash_report
 from . import due_dates
 from . import polish as polish_mod
 
@@ -885,4 +886,4 @@ def handle(engine: Any, command: dict) -> None:
         engine.reply(command_id, status=outcome.status, intent=outcome.intent.payload(), ms=outcome.ms, llm=llm,
                      heard=" ".join(text.split()))
 
-    threading.Thread(target=run, name="mostik-intent", daemon=True).start()
+    threading.Thread(target=crash_report.answered(engine, command_id, run), name="mostik-intent", daemon=True).start()

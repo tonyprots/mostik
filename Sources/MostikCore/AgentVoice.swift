@@ -36,15 +36,15 @@ public struct AgentVoiceSettings: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let d = AgentVoiceSettings()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        tmuxPaste = try c.decodeIfPresent(Bool.self, forKey: .tmuxPaste) ?? d.tmuxPaste
-        tmuxTarget = try c.decodeIfPresent(String.self, forKey: .tmuxTarget) ?? d.tmuxTarget
-        addressing = try c.decodeIfPresent(Bool.self, forKey: .addressing) ?? d.addressing
-        voiceSend = try c.decodeIfPresent(Bool.self, forKey: .voiceSend) ?? d.voiceSend
-        fileMentions = try c.decodeIfPresent(Bool.self, forKey: .fileMentions) ?? d.fileMentions
-        announce = try c.decodeIfPresent(Bool.self, forKey: .announce) ?? d.announce
-        announceSummary = try c.decodeIfPresent(Bool.self, forKey: .announceSummary) ?? d.announceSummary
-        voiceRU = try c.decodeIfPresent(String.self, forKey: .voiceRU)
-        voiceEN = try c.decodeIfPresent(String.self, forKey: .voiceEN)
+        tmuxPaste = (try? c.decodeIfPresent(Bool.self, forKey: .tmuxPaste)) ?? d.tmuxPaste
+        tmuxTarget = (try? c.decodeIfPresent(String.self, forKey: .tmuxTarget)) ?? d.tmuxTarget
+        addressing = (try? c.decodeIfPresent(Bool.self, forKey: .addressing)) ?? d.addressing
+        voiceSend = (try? c.decodeIfPresent(Bool.self, forKey: .voiceSend)) ?? d.voiceSend
+        fileMentions = (try? c.decodeIfPresent(Bool.self, forKey: .fileMentions)) ?? d.fileMentions
+        announce = (try? c.decodeIfPresent(Bool.self, forKey: .announce)) ?? d.announce
+        announceSummary = (try? c.decodeIfPresent(Bool.self, forKey: .announceSummary)) ?? d.announceSummary
+        voiceRU = (try? c.decodeIfPresent(String.self, forKey: .voiceRU)) ?? d.voiceRU
+        voiceEN = (try? c.decodeIfPresent(String.self, forKey: .voiceEN)) ?? d.voiceEN
         midTurn = (try? c.decodeIfPresent(Bool.self, forKey: .midTurn)) ?? d.midTurn
     }
 }
@@ -74,6 +74,9 @@ public enum VoiceSend {
     static let trailingPunctuation: Set<Character> = [".", "!", "?", "…", ",", ";", ":", "—", "–", "-", " ", "\n", "\t"]
     static let terminal: Set<Character> = [".", "!", "?", "…"]
     static let separators: Set<Character> = [",", ";", ":", "—", "–", "-", ".", "!", "?", "…"]
+    /// Только они — граница фразы перед командой. Тире и двоеточие вводят то же предложение
+    /// («кнопка — Send», «не: отправь»), блокеры за ними проверяются.
+    static let phraseBreaks: Set<Character> = [",", ";", ".", "!", "?", "…"]
 
     /// «Поправь тест, отправь.» → «Поправь тест.» + Enter. «Отправь письмо Маше» — без изменений.
     public static func detect(_ text: String) -> VoiceSendResult {
@@ -89,18 +92,24 @@ public enum VoiceSend {
         guard wordStart < body.endIndex else { return unchanged }
         let word = body[wordStart...].lowercased()
         guard words.contains(word) else { return unchanged }
+        // Вопрос — не команда: «Какую кнопку нажать — Send?». Enter в окне агента необратим.
+        if tailPunct == "?" { return unchanged }
         var before = body[..<wordStart]
         // Что стояло перед словом: знак препинания — граница фразы, блокер — часть просьбы.
         var hadSeparator = false
         var beforePunct: Character?
         while let last = before.last, last.isWhitespace || separators.contains(last) {
-            if separators.contains(last) { hadSeparator = true }
+            if phraseBreaks.contains(last) { hadSeparator = true }
             if terminal.contains(last), beforePunct == nil { beforePunct = last }
             before = before.dropLast()
         }
         if !hadSeparator, let previous = before.split(whereSeparator: { $0.isWhitespace }).last {
             let p = previous.lowercased().replacingOccurrences(of: "’", with: "'")
             if blockers.contains(p) { return unchanged }
+            // «Напиши Пете: я всё send» — после двоеточия идёт диктуемое сообщение, а слово в его конце
+            // не отделено паузой: это текст, а не команда. «Напиши Пете: я всё, отправь» — команда.
+            let clause = before[(before.lastIndex(where: { phraseBreaks.contains($0) }).map { before.index(after: $0) } ?? before.startIndex)...]
+            if clause.contains(":") { return unchanged }
         }
         // Вернуть знак конца фразы, съеденный вместе с командой: «Поправь тест, отправь.» → «Поправь тест.»
         var result = String(before).trimmingCharacters(in: .whitespacesAndNewlines)

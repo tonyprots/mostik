@@ -10,6 +10,8 @@ public enum TextOnlyAudio {
         case removed([String])
         /// Отрезки затёрты тишиной.
         case silenced
+        /// Стереть удалось не всё: в манифест «стёрто» не записано, следующая попытка — при запуске.
+        case incomplete
     }
 
     static let header = 44
@@ -34,9 +36,13 @@ public enum TextOnlyAudio {
         let fm = FileManager.default
         if block.whole {
             var removed: [String] = []
+            var left = false
             for name in MeetingFolder.audioFiles(folder) {
-                if (try? fm.removeItem(at: folder.appendingPathComponent(name))) != nil { removed.append(name) }
+                let url = folder.appendingPathComponent(name)
+                if (try? fm.removeItem(at: url)) != nil { removed.append(name) } else if fm.fileExists(atPath: url.path) { left = true }
             }
+            // Файл остался — «стёрто» в манифест не пишем: `needsPurge` останется истинным до удачной попытки.
+            if left { return .incomplete }
             MeetingFolder.update(folder, ["audio": ["kept": false, "removed_at": MeetingFolder.iso(now),
                                                     "removed": removed, "reason": "text_only"],
                                           "text_only": ["silenced_at": MeetingFolder.iso(now)]], now: now)
@@ -46,12 +52,14 @@ public enum TextOnlyAudio {
         if segments.isEmpty {
             segments = MeetingWatchdog.Track.allCases.map { MeetingSegment(track: $0, file: "\($0.rawValue).wav", offset: 0) }
         }
+        var complete = true
         for segment in segments {
             let url = folder.appendingPathComponent(segment.file)
             let seconds = Double(dataBytes(url)) / Double(LivePCM.sampleRate * 2)
             let ranges = TextOnlyRanges.byteRanges(block.spans, segmentOffset: segment.offset, segmentSeconds: seconds)
-            zero(url, ranges: ranges)
+            if !zero(url, ranges: ranges) { complete = false }
         }
+        guard complete else { return .incomplete }
         MeetingFolder.update(folder, ["text_only": ["silenced_at": MeetingFolder.iso(now)]], now: now)
         return .silenced
     }

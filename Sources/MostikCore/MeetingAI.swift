@@ -244,6 +244,7 @@ public struct MeetingAIFile: Equatable, Sendable {
             return t.isEmpty ? nil : t
         }
         func num(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
+        func int(_ v: Any?) -> Int { SafeInt.clamp(num(v)) }
         func refs(_ v: Any?) -> [Int] { ((v as? [Any]) ?? []).compactMap { ($0 as? NSNumber)?.intValue } }
         func point(_ p: [String: Any]) -> MeetingAIPoint? {
             guard let text = str(p["text"]) else { return nil }
@@ -260,7 +261,7 @@ public struct MeetingAIFile: Equatable, Sendable {
         }
         let notes = ((raw["notes"] as? [[String: Any]]) ?? []).compactMap { n -> MeetingAINote? in
             guard let mark = str(n["mark"]) else { return nil }
-            return MeetingAINote(markIndex: Int(num(n["mark_index"])), at: num(n["at"]), mark: mark,
+            return MeetingAINote(markIndex: int(n["mark_index"]), at: num(n["at"]), mark: mark,
                                  text: str(n["text"]) ?? mark, refs: refs(n["refs"]),
                                  kept: n["kept"] as? Bool ?? false, fallback: n["fallback"] as? Bool ?? false)
         }
@@ -280,7 +281,7 @@ public struct MeetingAIFile: Equatable, Sendable {
             mode: mode, status: MeetingAIResult.Status(rawValue: raw["status"] as? String ?? "") ?? .failed,
             error: str(raw["error"]), overview: str(raw["overview"]) ?? "", points: points, notes: notes,
             tasks: tasks, backend: str(raw["backend"]) ?? "claude", model: str(raw["model"]),
-            seconds: num(raw["seconds"]), calls: Int(num(raw["calls"])), chunks: max(1, Int(num(raw["chunks"]))),
+            seconds: num(raw["seconds"]), calls: int(raw["calls"]), chunks: max(1, int(raw["chunks"])),
             coverage: num(raw["coverage"]))
         result.topic = str(raw["topic"]) ?? ""
         result.template = str(raw["template"]) ?? "general"
@@ -297,8 +298,8 @@ public struct MeetingAIFile: Equatable, Sendable {
             return MeetingAIAgendaItem(question: question, heard: pointList(a["heard"]), decided: pointList(a["decided"]))
         }
         if let inputs = raw["inputs"] as? [String: Any], !inputs.isEmpty {
-            result.inputs = MeetingAIInputs(used: inputs["used"] as? Bool ?? true, agenda: Int(num(inputs["agenda"])),
-                                            notesChars: Int(num(inputs["notes_chars"])), images: Int(num(inputs["images"])))
+            result.inputs = MeetingAIInputs(used: inputs["used"] as? Bool ?? true, agenda: int(inputs["agenda"]),
+                                            notesChars: int(inputs["notes_chars"]), images: int(inputs["images"]))
         }
         result.title = str(raw["title"])
         result.instruction = str(raw["instruction"])
@@ -389,13 +390,17 @@ public enum MeetingAIPolicy {
 
     /// `localModel` — локальная LLM скачана: встреча «Только на этом Mac» при облачном выборе
     /// уходит на неё, а не остаётся без сводки и названия. Расшифровка не покидает Mac,
-    /// поэтому отдельного согласия не нужно.
+    /// поэтому облачного согласия не нужно — только общее «Заметки и сводка встреч».
     public static func gate(_ settings: MostikSettings, sensitive: Bool = false, localModel: Bool = false) -> Gate {
         // Как у причёсывания: `claude` без облачного согласия на причёсывание считается выключенным.
         let backend = settings.meetingEffectiveBackend
         guard backend != .off else { return .noBackend }
         if backend.isCloud {
-            if sensitive { return localModel ? .ready(.mlx) : .sensitiveCloud }
+            if sensitive {
+                guard localModel else { return .sensitiveCloud }
+                // Выключенный переключатель сводок действует и на встречи «Только на этом Mac».
+                return settings.meetingAIConsent ? .ready(.mlx) : .needsConsent(.mlx)
+            }
             return MeetingCloudPolicy.cloudAllowed(settings) ? .ready(backend) : .needsConsent(backend)
         }
         return settings.meetingAIConsent ? .ready(backend) : .needsConsent(backend)

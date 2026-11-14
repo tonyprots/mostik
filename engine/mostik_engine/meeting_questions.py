@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from . import crash_report
 from . import polish as polish_mod
 from .textnorm import question_language
 
@@ -360,6 +361,13 @@ def load(folder: Path) -> dict[str, Any]:
     return data
 
 
+def _next_id(items: Sequence[dict[str, Any]]) -> str:
+    """Номер — после самого большого из имеющихся: журнал обрезается, и `len + 1` начинал повторяться."""
+    numbers = [int(match.group(1)) for item in items
+               if (match := re.fullmatch(r"q(\d+)", str(item.get("id") or "")))]
+    return f"q{max(numbers, default=0) + 1}"
+
+
 def save(folder: Path, data: dict[str, Any]) -> None:
     path = journal_path(folder)
     data["schema"], data["version"], data["updated_at"] = SCHEMA, VERSION, _now()
@@ -418,7 +426,7 @@ def record_line(folder: Path, *, track: str, at: float, text: str, found: Sequen
                    for item in items):
                 continue
             item = {
-                "id": f"q{len(items) + 1}",
+                "id": _next_id(items),
                 "at": round(float(at), 2),
                 "track": track,
                 "speaker": speaker,
@@ -561,7 +569,7 @@ class QuestionService:
             state = judge.state() if judge is not None else {"available": False, "reason": "off"}
             self.engine.reply(command_id, questions=added, updated=updated, judge=state)
 
-        threading.Thread(target=job, name="mostik-questions", daemon=True).start()
+        threading.Thread(target=crash_report.answered(self.engine, command_id, job), name="mostik-questions", daemon=True).start()
 
     def list(self, command: dict) -> None:
         folder = self._folder(command)

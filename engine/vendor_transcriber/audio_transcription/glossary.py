@@ -100,6 +100,22 @@ def _pattern(alias: str) -> str:
     return rf"(?<!\w){re.escape(alias)}(?!\w)"
 
 
+def replace_at(pattern: str, replacement: str, text: str, segment: Segment, moment: float) -> str:
+    """Заменяет одно вхождение `pattern` — ближайшее к моменту `moment` внутри сегмента.
+
+    Сегмент — пачка до 24 с, и слово в нём встречается не раз: «Наш мастер сказал… слить ветку
+    в мастер». Первое вхождение — не обязательно то, о котором спор; место расхождения известно
+    по оценке времени (`ReviewItem.start` — доля слов сегмента).
+    """
+    matches = list(re.finditer(pattern, text))
+    if not matches:
+        return text
+    duration = segment.end - segment.start
+    share = min(max((moment - segment.start) / duration, 0.0), 1.0) if duration > 0 else 0.0
+    match = min(matches, key=lambda found: abs(found.start() - share * len(text)))
+    return text[: match.start()] + replacement + text[match.end():]
+
+
 def _trim(word: str) -> str:
     """Убирает пунктуацию по краям: «фубар.» должно сравниваться как «фубар»."""
     return word.strip(".,!?;:()[]{}«»\"'…-—–")
@@ -353,7 +369,7 @@ def take_verifier_canonicals(
         if fix is None or index is None:
             items.append(item)
             continue
-        texts[index] = re.sub(_pattern(piece), lambda _: entry.canonical, texts[index], count=1)
+        texts[index] = replace_at(_pattern(piece), entry.canonical, texts[index], segments[index], item.start)
         taken.append(
             Correction(
                 start=segments[index].start,

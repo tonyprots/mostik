@@ -23,6 +23,14 @@ def mostik_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def network_up(monkeypatch):
+    """Проверка сети перед `claude -p` в тестах не ходит наружу: сеть «есть». Тест офлайна подменяет сам."""
+    from mostik_engine import polish
+
+    monkeypatch.setattr(polish, "api_reachable", lambda *args, **kwargs: True)
+
+
 def tone(seconds: float, freq: float = 220.0, amp: float = 0.3) -> np.ndarray:
     t = np.arange(int(seconds * SR)) / SR
     return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)

@@ -132,7 +132,9 @@ public enum MeetingRecovery {
         guard let summary, !isRecordingNow else { return .none }
         let crashed = summary.recording == "recording"
         let unfinished = ["pending", "processing"].contains(summary.transcript ?? "")
-        if hasTranscript && summary.transcript == "done" { return crashed ? .giveUp(markIncomplete: true) : .none }
+        // Готовая расшифровка и упавшая запись — это «Продолжить запись»: дозаписанный звук ещё без текста,
+        // поэтому идём ниже и расшифровываем заново, если есть из чего.
+        if hasTranscript && summary.transcript == "done" && !crashed { return .none }
         guard crashed || unfinished else { return .none }
         guard hasAudio, summary.audioKept, summary.transcriptAttempts < maxAttempts else {
             return .giveUp(markIncomplete: crashed)

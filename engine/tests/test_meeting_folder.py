@@ -468,3 +468,14 @@ def test_schemas_know_every_value_the_engine_writes():
     manifest = schema("meeting-manifest.schema.json")["properties"]
     assert validate("summary", manifest["title_source"]) == []
     assert validate(m.DIARIZATION_FAILED, manifest["transcript"]["properties"]["code"]) == []
+
+
+def test_unreadable_manifest_counts_as_sensitive(tmp_path):
+    # Пометку «только на этом Mac» не видно в битом манифесте — считаем встречу закрытой.
+    from mostik_engine import meeting_folder
+    folder = tmp_path / "2026-11-14-100000"
+    folder.mkdir()
+    (folder / "manifest.json").write_text('{"sensitive": tr', encoding="utf-8")
+    assert meeting_folder.is_sensitive(folder) is True
+    (folder / "manifest.json").write_text('{"sensitive": false}', encoding="utf-8")
+    assert meeting_folder.is_sensitive(folder) is False

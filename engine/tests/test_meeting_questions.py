@@ -299,3 +299,10 @@ def test_protocol_question_list_finalize_and_hint(engine, tmp_path):
     assert final["counts"]["total"] == 1
     send(eng, cmd="meeting_question", id=5, folder=str(tmp_path / "нет"), text="Когда?")
     assert sink.wait(lambda m: m.get("id") == 5)["ok"] is False
+
+
+def test_question_ids_stay_unique_after_trim():
+    from mostik_engine import meeting_questions as mq
+    items = [{"id": f"q{n}"} for n in range(2, 502)]  # журнал обрезан: 500 записей, первая ушла
+    assert mq._next_id(items) == "q502"
+    assert mq._next_id([]) == "q1"

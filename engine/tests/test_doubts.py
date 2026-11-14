@@ -282,3 +282,77 @@ def test_like_sounding_pairs_stay_doubts():
                       "r", primary_span="Сазонова", verifier_span="Созонова")
     for item in (name, _item("PHP-модуль,", "P2P модуль,")):
         assert len(select_doubts([item], TermIndex())[0]) == 1, item.primary_span
+
+
+# Мусор в сомнениях — выдуманные примеры по образцу типовых сбоев.
+
+def test_empty_heard_is_never_a_doubt():
+    android = GlossaryEntry("Android", (), auto_apply=False)
+    for heard in ("", " ", "—"):
+        assert select_doubts([_item(heard, "Android")], TermIndex((), [android]))[0] == [], heard
+    assert select_doubts([_item("", "Триональю")], TermIndex())[0] == []
+
+
+def test_verifier_only_term_must_sound_alike():
+    # «История» → «Искра»: термин только у проверяющей, а по звучанию не похоже — сдвиг пары.
+    astra = GlossaryEntry("Искра", ("искро",), auto_apply=False)
+    assert select_doubts([_item("История", "Искра")], TermIndex((), [astra]))[0] == []
+
+
+def test_fillers_on_edges_are_trimmed():
+    # «Мммм... JP Norton» — междометие проверяющей не входит в вариант; «… Угу» — в услышанное.
+    doubts, _ = select_doubts([_item("Джипи Нортон", "Мммм... JP Norton")], TermIndex())
+    assert [(d.heard, d.suggestion) for d in doubts] == [("Джипи Нортон", "JP Norton")]
+    doubts, _ = select_doubts([_item("Сноумен. Угу", "Snowman.")], TermIndex())
+    assert [d.heard for d in doubts] == ["Сноумен."]
+
+
+def test_number_against_number_is_not_a_doubt():
+    # «шестидесятый» → «шести тысяч»: спор о числе, даже если число совпало со словарём по звучанию.
+    entry = GlossaryEntry("шести тысяч", (), auto_apply=False)
+    assert select_doubts([_item("шестидесятый", "шести тысяч")], TermIndex((), [entry]))[0] == []
+
+
+def test_same_word_beside_a_number_is_not_a_doubt():
+    # «Итерациях» → «Итерация 310,»: то же слово в другой форме, рядом число.
+    assert select_doubts([_item("Итерациях", "Итерация 310,")], TermIndex())[0] == []
+
+
+def test_function_word_is_not_a_proper_noun():
+    item = ReviewItem(0.0, 5.0, "сказал но потом", "сказал На потом", 0.2, (), "r",
+                      primary_span="но", verifier_span="На")
+    assert select_doubts([item], TermIndex())[0] == []
+
+
+def test_one_suggestion_once_per_dictation():
+    # Один термин в двух местах диктовки — один вопрос: ответ на него решает оба.
+    items = [_item("Джипи Нортон", "JP Norton"), _item("ДжиП Нортон.", "JP Norton,")]
+    doubts, _ = select_doubts(items, TermIndex())
+    assert [d.suggestion for d in doubts] == ["JP Norton"]
+
+
+def test_real_mishearings_survive_the_cleanup():
+    pairs = [("Сноумен", "Snowman"), ("Рубук", "Rubook"), ("Флинтро—", "Flint.ru"),
+             ("шоблон длякейнота—", "шаблон для Keynote,")]
+    for heard, suggestion in pairs:
+        assert len(select_doubts([_item(heard, suggestion)], TermIndex())[0]) == 1, heard
+    claude = GlossaryEntry("Claude", (), auto_apply=False)
+    assert len(select_doubts([_item("клон", "Claude")], TermIndex((), [claude]))[0]) == 1
+
+
+def test_russian_word_near_personal_english_term_is_translation():
+    # «продукте» → product: по звучанию близко, но обе модели слышали русское слово.
+    product = GlossaryEntry("product", (), auto_apply=False)
+    assert select_doubts([_item("продукте", "продукты")], TermIndex((), [product]))[0] == []
+    # Алиас кириллицей, заведённый самим пользователем, остаётся вопросом.
+    notion = GlossaryEntry("Notion", ("ноушн",), auto_apply=False)
+    assert len(select_doubts([_item("ноушн", "наушн")], TermIndex((), [notion]))[0]) == 1
+
+
+def test_names_already_written_by_primary_are_not_doubts():
+    item = ReviewItem(0.0, 5.0, "Летали в Лиссабон, Оренбург, потом домой", "Летали в Лиссабонс, Арендук, потом домой",
+                      0.2, (), "r", primary_span="Лиссабон, Оренбург,", verifier_span="Лиссабонс, Арендук,")
+    assert select_doubts([item], TermIndex())[0] == []
+    item = ReviewItem(0.0, 5.0, "Говорили с Гленом Гульдом, долго", "Говорили Гленном Гульдам, долго",
+                      0.2, (), "r", primary_span="с Гленом Гульдом,", verifier_span="Гленном Гульдам,")
+    assert select_doubts([item], TermIndex())[0] == []

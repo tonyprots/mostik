@@ -233,7 +233,7 @@ public struct OnboardingView: View {
                          "Click the field, hold \(HoldKeys.name(model.settings.holdKey)), say a sentence and let go."))
             // Клавиша диктовки — здесь, а не только в Настройках: ею сейчас и пробуют.
             HStack(spacing: DS.Space.s) {
-                Text(L("Клавиша диктовки", "Dictation key")).font(TType.callout).foregroundStyle(Palette.inkSecondary)
+                Text(L("Клавиша записи", "Record key")).font(TType.callout).foregroundStyle(Palette.inkSecondary)
                 Spacer(minLength: DS.Space.s)
                 KeyPicker(selection: Binding(get: { model.settings.holdKey },
                                              set: { key in var s = model.settings; s.holdKey = key; model.onUpdateSettings(s) }))

@@ -52,6 +52,14 @@ public enum HUDHint {
         ]
     }
 
+    /// На паузе клавишу уже отпустили, а торопить некуда: пункты видны сразу и говорят, что будет с текстом.
+    public static func pausedItems(holdKey: String) -> [Control] {
+        [
+            Control(action: UIText.pick("Вставить", "Insert"), key: keySymbol(holdKey), spokenKey: spokenKey(holdKey)),
+            Control(action: UIText.pick("Отмена", "Cancel"), key: "esc", spokenKey: "Esc"),
+        ]
+    }
+
     /// Подсказка одной строкой: «Отпустите правый ⌥ · Отмена esc».
     public static func controls(holdKey: String, elapsed: TimeInterval, handsFree: Bool = false) -> String? {
         items(holdKey: holdKey, elapsed: elapsed, handsFree: handsFree)?.map { "\($0.action) \($0.key)" }.joined(separator: " · ")

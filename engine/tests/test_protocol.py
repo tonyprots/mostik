@@ -93,7 +93,7 @@ def test_bad_lines_produce_errors_not_crash(engine):
 def test_hello_and_power(engine):
     eng, sink = engine
     send(eng, cmd="hello", id=1)
-    hello = sink.lines[-1]
+    hello = sink.wait(lambda e: e.get("id") == 1)  # отвечает из своего потока: цикл stdin не ждёт статусов
     assert hello["id"] == 1 and hello["ok"] is True and "models" in hello and hello["version"]
     # «Проверка» показывает, разделит ли этот Mac встречу по голосам (fluidaudiocli).
     assert isinstance(hello["diarization"]["available"], bool)

@@ -20,11 +20,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       # Раннер собирает с Xcode, а README обещает сборку на одних Command Line Tools: путь «без Xcode»
       # CI не проверяет, его проверяют локально.
       - name: Xcode (последний стабильный)
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90  # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Версия Swift
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0  # история целиком: строка, удалённая из файла, остаётся в старых коммитах
       - name: scripts/check-denylist.sh
@@ -59,8 +59,8 @@ jobs:
     timeout-minutes: 20
     # Код transcriber — копия в engine/vendor_transcriber (П10 С11): второй репозиторий не нужен.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.14"
           cache: pip

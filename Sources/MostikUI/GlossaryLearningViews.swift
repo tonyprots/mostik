@@ -9,7 +9,7 @@ import MostikCore
 /// На месте пилюли диктовки: предложение из правок с «Запомнить / Нет». «Запомнить написание…»
 /// после вставки живёт в самой плашке итога. Окно — `Mostik/GlossaryLearningController.swift`.
 public struct LearnPromptCard: View {
-    public static let size = CGSize(width: 440, height: 64)
+    public static let size = CGSize(width: 520, height: 64)
     @ObservedObject var learning: GlossaryLearningModel
 
     public init(learning: GlossaryLearningModel) { self.learning = learning }
@@ -42,6 +42,9 @@ public struct LearnPromptCard: View {
             Spacer(minLength: DS.Space.xs)
             Button(L("Нет", "No")) { learning.onDecide(s, false) }
                 .buttonStyle(.mostik(.quiet, compact: true))
+            Button(L("Своё…", "Mine…")) { learning.onEditSuggestion(s) }
+                .buttonStyle(.mostik(.quiet, compact: true))
+                .help(L("Ввести правильное написание самому", "Type the right spelling yourself"))
             Button(L("Запомнить", "Remember")) { learning.onDecide(s, true) }
                 .buttonStyle(.mostik(.primary, compact: true))
         }
@@ -138,6 +141,41 @@ struct RememberSpellingSection: View {
 
 struct LearnSuggestionsSection: View {
     @ObservedObject var learning: GlossaryLearningModel
+    @State private var draft = ""
+    @State private var draftFor: String?
+
+    private func startEditing(_ s: GlossarySuggestion) {
+        draft = s.canonical
+        draftFor = s.id
+        learning.editingSuggestionID = s.id
+    }
+
+    private func stopEditing() {
+        learning.editingSuggestionID = nil
+        draftFor = nil
+    }
+
+    /// Строка в режиме «своё написание»: как слышится → поле → «Запомнить» / «Отмена».
+    private func editRow(_ s: GlossarySuggestion) -> some View {
+        let typed = (draftFor == s.id ? draft : s.canonical).trimmingCharacters(in: .whitespacesAndNewlines)
+        return HStack(spacing: DS.Space.s) {
+            Text(s.heard).font(TType.callout).foregroundStyle(Palette.inkSecondary)
+            Image(systemName: "arrow.right").font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Palette.inkTertiary)
+            MostikTextField(placeholder: L("Как пишется на самом деле", "The right spelling"),
+                            text: Binding(get: { draftFor == s.id ? draft : s.canonical },
+                                          set: { draft = $0; draftFor = s.id }))
+                .onSubmit { if !typed.isEmpty { learning.onDecideCustom(s, typed); stopEditing() } }
+            Button(L("Отмена", "Cancel")) { withAnimation(Motion.quick) { stopEditing() } }
+                .buttonStyle(.mostik(.quiet, compact: true))
+            Button(L("Запомнить", "Remember")) {
+                learning.onDecideCustom(s, typed)
+                withAnimation(Motion.quick) { stopEditing() }
+            }
+            .buttonStyle(.mostik(.secondary, compact: true))
+            .disabled(typed.isEmpty)
+        }
+    }
 
     var body: some View {
         if !learning.suggestions.isEmpty {
@@ -147,6 +185,10 @@ struct LearnSuggestionsSection: View {
                 VStack(spacing: 0) {
                     ForEach(Array(learning.suggestions.enumerated()), id: \.element.id) { i, s in
                         if i > 0 { Hairline(inset: DS.Space.s) }
+                        Group {
+                        if learning.editingSuggestionID == s.id {
+                            editRow(s)
+                        } else {
                         HStack(spacing: DS.Space.s) {
                             Text(s.canonical).font(TType.code.weight(.medium)).foregroundStyle(Palette.ink)
                                 .frame(width: GlossaryColumns.first, alignment: .leading)
@@ -157,8 +199,13 @@ struct LearnSuggestionsSection: View {
                                 .foregroundStyle(Palette.inkTertiary)
                             Button(L("Нет", "No")) { learning.onDecide(s, false) }
                                 .buttonStyle(.mostik(.quiet, compact: true))
+                            Button(L("Своё…", "Mine…")) { withAnimation(Motion.quick) { startEditing(s) } }
+                                .buttonStyle(.mostik(.quiet, compact: true))
+                                .help(L("Ввести правильное написание самому", "Type the right spelling yourself"))
                             Button(L("Запомнить", "Remember")) { learning.onDecide(s, true) }
                                 .buttonStyle(.mostik(.secondary, compact: true))
+                        }
+                        }
                         }
                         .lineLimit(1)
                         .padding(.leading, DS.Space.s)

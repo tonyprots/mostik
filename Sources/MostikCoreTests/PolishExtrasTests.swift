@@ -79,10 +79,10 @@ func runPolishExtrasTests() {
         var agentScenario = Scenario(id: "s4", name: "Задача агенту", apps: [cursor], style: .task)
         p.scenarios = [agentScenario]
         equal(p.plan(bundleID: cursor, host: nil, isAgent: true).polish?.style, .task, "сценарий включает причёсывание и у агента")
-        equal(p.decide(bundleID: cursor, isAgent: true), nil, "без сценария агент — как сказано")
+        equal(p.decide(bundleID: cursor, isAgent: true)?.style, .plain, "без сценария агент — обычным стилем")
         agentScenario.enabled = false
         p.scenarios = [agentScenario]
-        equal(p.plan(bundleID: cursor, host: nil, isAgent: true).polish, nil, "выключенный сценарий не работает")
+        equal(p.plan(bundleID: cursor, host: nil, isAgent: true).polish?.style, .plain, "выключенный сценарий не работает — обычное правило")
 
         var cloud = PolishSettings(backend: .claude, style: .plain, cloudConsent: false)
         cloud.scenarios = [Scenario(name: "x", apps: [slack], backend: .claude, style: .business)]
@@ -115,9 +115,8 @@ func runPolishExtrasTests() {
         var p = PolishSettings(backend: .mlx, style: .plain)
         p.pack = "pismo"
         equal(p.decide(bundleID: slack, isAgent: false)?.pack, "pismo", "пакет уходит в запрос")
-        equal(p.decide(bundleID: cursor, isAgent: true), nil)
-        p.setOverride(cursor, true)
-        equal(p.decide(bundleID: cursor, isAgent: true)?.pack, nil, "агенту — режим разработчика, не пакет")
+        equal(p.decide(bundleID: cursor, isAgent: true)?.pack, nil, "агенту — обычный стиль, не пакет")
+        equal(p.decide(bundleID: cursor, isAgent: true)?.style, .plain)
         let packs = ["pismo", "review"]
         var s = PolishSettings(backend: .mlx, style: .plain)
         var seen: [String] = []

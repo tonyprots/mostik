@@ -18,12 +18,14 @@ public enum AppMover {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let source = originalURL(of: bundle) ?? bundle
         let target = URL(fileURLWithPath: AppLocation.destination(bundleName: bundle.lastPathComponent))
-        if move(source, to: target) {
-            relaunch(target)
-        } else {
-            showManual(source)
+        switch move(source, to: target) {
+        case .moved: relaunch(target)
+        case .failed: showManual(source, hint: AppLocation.manualHint(russian: UIText.isRussian))
+        case .mismatch: showManual(target, hint: AppLocation.mismatchHint(russian: UIText.isRussian))
         }
     }
+
+    private enum Outcome { case moved, failed, mismatch }
 
     /// Настоящий путь транслоцированной копии — функция Security без публичного заголовка
     /// (её же берёт LetsMove); не нашлась — копируем то, что запущено.
@@ -36,7 +38,7 @@ public enum AppMover {
         return original?.takeRetainedValue() as URL?
     }
 
-    private static func move(_ source: URL, to target: URL) -> Bool {
+    private static func move(_ source: URL, to target: URL) -> Outcome {
         let fm = FileManager.default
         do {
             if fm.fileExists(atPath: target.path) {
@@ -49,17 +51,25 @@ public enum AppMover {
             } else {
                 try fm.moveItem(at: source, to: target)
             }
+            // Источник между вопросом и переносом могли подменить: карантин снимаем только с того же
+            // кода, что сейчас запущен. Сборке без подписи сверять не с чем — ей как раньше.
+            let own = CodeRequirement.runningCodeHash()
+            if AppLocation.quarantine(own: own, matches: CodeRequirement.isIntact(target, sameAs: own ?? Data())) == .keep {
+                AppLog.shared.event("app", "moved copy does not match the running code, quarantine kept")
+                return .mismatch
+            }
             // Карантин снят у нашей же копии, уже открытой человеком: иначе macOS снова запустит её
             // из временной папки. Так же делает LetsMove.
             let xattr = Process()
             xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
             xattr.arguments = ["-dr", "com.apple.quarantine", target.path]
+            xattr.environment = ToolEnvironment.minimal(ProcessInfo.processInfo.environment)
             try? xattr.run()
             xattr.waitUntilExit()
-            return true
+            return .moved
         } catch {
             AppLog.shared.event("app", "move to Applications failed: \(error.localizedDescription)")
-            return false
+            return .failed
         }
     }
 
@@ -67,17 +77,19 @@ public enum AppMover {
     private static func relaunch(_ target: URL) {
         let pid = ProcessInfo.processInfo.processIdentifier
         let waiter = Process()
-        waiter.executableURL = URL(fileURLWithPath: "/bin/sh")
-        waiter.arguments = ["-c", "while /bin/kill -0 \(pid) 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"$0\"", target.path]
+        // Тот же скрипт и то же урезанное окружение, что у перезапуска после обновления (`Relaunch`).
+        waiter.executableURL = URL(fileURLWithPath: Relaunch.shell)
+        waiter.arguments = Relaunch.arguments(pid: pid, bundlePath: target.path)
+        waiter.environment = Relaunch.environment(ProcessInfo.processInfo.environment)
         try? waiter.run()
         NSApp.terminate(nil)
     }
 
     @MainActor
-    private static func showManual(_ source: URL) {
+    private static func showManual(_ source: URL, hint: String) {
         let alert = NSAlert()
         alert.messageText = AppLocation.title(russian: UIText.isRussian)
-        alert.informativeText = AppLocation.manualHint(russian: UIText.isRussian)
+        alert.informativeText = hint
         alert.addButton(withTitle: L("Показать в Finder", "Show in Finder"))
         alert.addButton(withTitle: L("Позже", "Later"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }

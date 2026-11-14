@@ -122,10 +122,15 @@ public final class CommandCalendar: CalendarProvider, @unchecked Sendable {
         case loading
         case ok(events: Int, at: Date)
         case failed(String)
+        /// Файл команды не тот, на который давали согласие: команда выключена до нового ответа.
+        case changed(path: String)
     }
 
     /// Новый статус после запуска — на главной очереди.
     public var onUpdate: (Status) -> Void = { _ in }
+    /// Сверка перед каждым запуском (`CalendarCommandTrust.gate`): false — файл изменился, не запускать.
+    /// Зовётся в фоне.
+    public var mayRun: @Sendable (String) -> Bool = { _ in true }
 
     private let lock = NSLock()
     private var path: String?
@@ -171,10 +176,26 @@ public final class CommandCalendar: CalendarProvider, @unchecked Sendable {
         }
         guard let (path, gen) = job else { return }
         report(.loading)
+        let mayRun = self.mayRun
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard mayRun(path) else { self?.refuse(path, generation: gen); return }
             let result = ExternalCalendar.run(path: path, now: Date())
             self?.finish(result, generation: gen)
         }
+    }
+
+    /// Файл изменился: выключаемся, чтобы не спрашивать каждые несколько минут; вернёт `setPath`.
+    private func refuse(_ refused: String, generation gen: Int) {
+        let current: Bool = lock.withLock {
+            running = false
+            guard gen == generation else { return false }
+            path = nil
+            events = []
+            fetchedAt = nil
+            generation += 1
+            return true
+        }
+        if current { report(.changed(path: refused)) }
     }
 
     private func finish(_ result: Result<[CalendarEvent], ExternalCalendar.RunError>, generation gen: Int) {

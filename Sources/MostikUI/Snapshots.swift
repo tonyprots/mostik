@@ -26,6 +26,8 @@ public enum Snapshots {
             ("hud-recording", AppModel.HUDPhase.recording),
             ("hud-transcribing", .transcribing),
             ("hud-done", .done(summary: L("Вставлено", "Inserted"), doubts: 2, agent: true)),
+            ("hud-done-unpolished", .done(summary: L("Вставлено · без причёсывания — войдите в Claude", "Inserted · not polished — sign in to Claude"), doubts: 0, agent: true)),
+            ("hud-done-unpolished-doubts", .done(summary: L("Вставлено · без причёсывания", "Inserted · not polished"), doubts: 2, agent: true)),
             ("hud-copied", .done(summary: L("Скопировано", "Copied"), doubts: 0, agent: false)),
             ("hud-done-spelling", .done(summary: L("Вставлено", "Inserted"), doubts: 0, agent: false, spelling: "d1")),
             ("hud-error", .error(L("Микрофон занят другим приложением", "Microphone is busy"))),
@@ -42,12 +44,26 @@ public enum Snapshots {
             model.hud = phase
             write(hudStage(HUDView(model: model)), name, dir, width: 460, height: 108)
         }
+        // Пауза диктовки: «Вставить» и «Отмена» остаются на плашке.
+        do {
+            let model = demoModel()
+            model.hud = .recording
+            model.dictationPaused = true
+            write(hudStage(HUDView(model: model)), "hud-paused", dir, width: 460, height: 108)
+        }
         // Длинная диктовка ждёт вторую модель: полоса и «Вставить сразу».
         do {
             let model = demoModel()
             model.hud = .transcribing
             model.verifyProgress = 0.6
             write(hudStage(HUDView(model: model)), "hud-verifying", dir, width: 460, height: 108)
+        }
+        do {
+            let model = demoModel()
+            model.hud = .transcribing
+            model.verifyStage = "polish"
+            model.verifyProgress = 0.3
+            write(hudStage(HUDView(model: model)), "hud-polishing", dir, width: 460, height: 108)
         }
 
         // Голосовая правка (D5): та же пилюля, своё содержимое.
@@ -70,6 +86,8 @@ public enum Snapshots {
         for dark in [false, true] {
             let menu = demoModel()
             menu.meetingSuggestion = L("Телемосте", "Zoom")
+            menu.settings.polish = PolishSettings(backend: .claude, cloudConsent: true)
+            menu.polishReasons["claude"] = "login"
             write(menuStage(MenuBarContentView(model: menu), dark: dark), "menubar" + (dark ? "-dark" : ""), dir, width: 336, dark: dark)
         }
         // «Записать голос» во время записи: «Остановить запись» и таймер.
@@ -212,6 +230,12 @@ public enum Snapshots {
         write(SettingsWindowView(model: sources), "main-settings-meetings-sources", dir,
               width: 900, height: settingsPaneShot(.meetings).height + 200)
 
+        // Встречи: сборка без OAuth-клиента Google — строка ведёт в учётные записи macOS.
+        let noGoogle = settingsDemo(.meetings)
+        noGoogle.settings.calendarEnabled = true
+        write(SettingsWindowView(model: noGoogle), "main-settings-meetings-no-google", dir,
+              width: 900, height: settingsPaneShot(.meetings).height + 200)
+
         // Причёсывание (D3, D4, G7): Claude включён с согласием, стиль «деловой», исключения по приложениям.
         for dark in [false, true] {
             let polish = demoModel()
@@ -221,6 +245,17 @@ public enum Snapshots {
             polish.polishAvailable = ["claude": true, "mlx": false]
             write(SettingsWindowView(model: polish), "main-settings-polish" + (dark ? "-dark" : ""), dir,
                   width: 900, height: 1268, dark: dark)
+        }
+        // Вход в Claude истёк, Codex установлен: «Через что» показывает состояние обеих программ.
+        do {
+            let expired = demoModel()
+            expired.settingsPane = .text
+            expired.settings.polish = PolishSettings(backend: .claude, style: .plain, cloudConsent: true)
+            expired.settings.polish.cli = .codex
+            expired.polishAvailable = ["claude": true, "mlx": false]
+            expired.polishCLIFound = ["claude": "login", "codex": "ok"]
+            expired.polishCLIUsing = "codex"
+            write(SettingsWindowView(model: expired), "main-settings-polish-codex", dir, width: 900, height: 760)
         }
         let polishConsent = demoModel()
         polishConsent.settingsPane = .text

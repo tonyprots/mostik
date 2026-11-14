@@ -34,9 +34,16 @@ public enum MeetingFolder {
     }
 
     /// Прочитать (или создать), слить `patch`, записать атомарно. NSNull в patch — `null` в JSON.
+    /// Манифест есть, но не разбирается (обрезан, правили руками) — поверх не пишем: базовый стёр бы
+    /// название и пометку «Только на этом Mac». Копия — `manifest.json.bad`, результат — пустой словарь.
     @discardableResult
     public static func update(_ folder: URL, _ patch: [String: Any], now: Date = Date()) -> [String: Any] {
-        let current = readManifest(folder) ?? base(folder, now: now)
+        let existing = readManifest(folder)
+        if existing == nil, let raw = try? Data(contentsOf: manifestURL(folder)), !raw.isEmpty {
+            try? raw.write(to: folder.appendingPathComponent(manifestName + ".bad"), options: .atomic)
+            return [:]
+        }
+        let current = existing ?? base(folder, now: now)
         var merged = merge(current, patch)
         merged["schema"] = schema
         merged["version"] = max(version, (merged["version"] as? Int) ?? version)

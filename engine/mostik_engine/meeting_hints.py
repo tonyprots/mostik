@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from . import ask as ask_mod
+from . import crash_report
 from . import index as ix
 from . import meeting_folder
 from . import meeting_questions as mq
@@ -196,7 +197,7 @@ class HintService:
                 })
             self.engine.reply(command_id, **result)
 
-        threading.Thread(target=job, name="mostik-hint", daemon=True).start()
+        threading.Thread(target=crash_report.answered(self.engine, command_id, job), name="mostik-hint", daemon=True).start()
 
 
 def service(engine: Any) -> HintService:

@@ -350,9 +350,32 @@ do {
     equal(p.effectiveBackend, .off)
     p.cloudConsent = true; p.style = .business
     equal(p.decide(bundleID: telegram, isAgent: false), PolishRequest(backend: .claude, style: .business), "обычное приложение")
-    equal(p.decide(bundleID: cursor, isAgent: true), nil, "агентное приложение — выключено по умолчанию")
-    p.setOverride(cursor, true)
-    equal(p.decide(bundleID: cursor, isAgent: true)?.backend, .claude, "ручное включение побеждает агентность")
+    equal(p.decide(bundleID: cursor, isAgent: true), PolishRequest(backend: .claude, style: .plain),
+          "агентное окно — обычным стилем, а не деловым (2026-10-21)")
+    p.style = .dev
+    equal(p.decide(bundleID: cursor, isAgent: true)?.style, .dev, "«разработчик» агенту остаётся")
+    p.style = .business
+    // 2026-10-21: полировку просили, а текст ушёл без неё — плашка это говорит.
+    equal(PolishNotice.suffix(status: "done"), nil, "удача — без хвоста")
+    equal(PolishNotice.suffix(status: "refused"), nil, "полировать было нечего — не сбой")
+    check(PolishNotice.suffix(status: "auth")?.contains("Claude") == true, "истёк вход — назвать Claude")
+    check(PolishNotice.suffix(status: "failed") != nil, "любой другой сбой — тоже виден")
+    check(PolishNotice.suffix(status: "offline") != PolishNotice.suffix(status: "failed"), "без сети — своя причина")
+    check(!PolishNotice.isLasting("offline"), "сеть вернётся сама — не стойкий сбой")
+    check(PolishNotice.suffix(status: "auth", short: true)?.contains("Claude") == false, "с сомнениями — коротко")
+    equal(PolishNotice.suffix(status: "pending"), nil, "причёсанный текст в пути — не сбой")
+    let late = EngineCodec.decode(line: #"{"event": "polished", "session": "s1", "text": "Причёсано.", "polished": true, "polish": {"backend": "claude", "status": "done"}}"#)
+    equal(late, .polished(session: "s1", text: "Причёсано.", polished: true, status: "done"), "событие polished разбирается")
+    let plainClaude = PolishRequest(backend: .claude, style: .plain)
+    check(PolishRequest.allowsLate(plainClaude, autoEnter: false, command: false), "вставка сразу, причёсанный — следом")
+    check(!PolishRequest.allowsLate(plainClaude, autoEnter: true, command: false), "Enter сценария — ждём")
+    check(!PolishRequest.allowsLate(PolishRequest(backend: .claude, style: .plain, translate: PolishTranslate(to: "en", tone: .plain)),
+                                    autoEnter: false, command: false), "перевод — ждём")
+    check(!PolishRequest.allowsLate(PolishRequest(backend: .claude, style: .task), autoEnter: false, command: false), "задача — ждём")
+    check(PolishNotice.isLasting("auth") && !PolishNotice.isLasting("timeout"), "стойкий сбой — вход и модель")
+    p.setOverride(cursor, false)
+    equal(p.decide(bundleID: cursor, isAgent: true), nil, "ручное выключение для агентного окна")
+    p.setOverride(cursor, nil)
     p.setOverride(telegram, false)
     equal(p.decide(bundleID: telegram, isAgent: false), nil, "ручное выключение")
     p.setOverride(telegram, nil)
@@ -500,6 +523,7 @@ runDeliveryTests()
 
 // Папка встречи и вокруг неё (M10–M13, W2, W9, W11, W13, W14) — MeetingFolderTests.swift.
 runMeetingFolderTests()
+runAuditAppTests()
 runManifestSchemaTests()  // манифест приложения против docs/schemas — ManifestSchemaTests.swift
 runLaunchAtLoginTests()
 runSharedEnvironmentTests()  // списки окружения против docs/engine-environment.json — SharedEnvironmentTests.swift
@@ -560,6 +584,7 @@ runSettingsRouteTests()  // B1/B2: Настройки — вкладка гла�
 runCopyGuardTests()  // copy-clarity 2026-10-12: запрещённые слова в русских строках — CopyGuardTests.swift
 runHUDHintTests()  // П9-B: подсказка «⌥ стоп · ⎋ отмена» в плашке записи
 runProgressCreepTests()  // полоса «Сверяю» ползёт сама и добегает до 100 % — ProgressCreepTests.swift
+runAudioTractTests()  // аудит 2026-11-14: повторы входа, хвост записи, разрыв дорожки
 runWarmMicSettleTests()  // сбой CoreAudio 2026-10-19: перенастройка после тишины
 runMicChoiceTests()  // R3b: выбор микрофона только для Mostik, системный вход не меняется
 runSilentInputWatchTests()  // залипший микрофон: нули → без обработки голоса → заново → предупреждение
@@ -626,6 +651,13 @@ runCalDAVTests()  // Яндекс Календарь по CalDAV, поддель
 runGoogleCalendarTests()  // Google: вход, токены, календари, события — GoogleCalendarTests.swift
 runCalendarAccountsTests()  // выбор источников календаря — CalendarAccountsTests.swift
 runAppLocationTests()  // запуск из .dmg и транслоцированной копии — AppLocationTests.swift
+runAuditCoreTests()  // ревью 2026-11-14: ядро и безопасность — AuditCoreTests.swift
+runAuditLifeTests()  // ревью 2026-11-14, вторая порция: жизненный цикл движка — AuditLifeTests.swift
+runZoomCommaNameTests()  // C20 — AuditLifeTests.swift
+runLinkedFileTests()  // И5 — AuditLifeTests.swift
+runQuarantineDecisionTests()  // Н2 — AuditLifeTests.swift
+runCalendarCommandPinTests()  // Н6 — AuditLifeTests.swift
+runCallPageOriginTests()  // Н9 — AuditLifeTests.swift
 
 print("MostikCoreTests: \(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

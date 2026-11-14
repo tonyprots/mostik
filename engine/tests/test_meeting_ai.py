@@ -426,3 +426,20 @@ def test_lane_waits_for_dictation_only_with_local_model():
     assert lane._busy({"backend": "mlx"})
     assert not lane._busy({"backend": "claude"})
     assert lane._busy()
+
+
+def test_repair_json_keeps_string_content():
+    # Хвостовая запятая чинится, а «умные» кавычки и None/True внутри значений остаются как были.
+    assert mai.repair_json('{"a": "Проект “Альфа”", "b": [1, 2,],}') == {"a": "Проект “Альфа”", "b": [1, 2]}
+    assert mai.repair_json('{"a": "None of this, True]", "b": None, "c": True}') == {
+        "a": "None of this, True]", "b": None, "c": True}
+    assert mai.repair_json('{“a”: “x”, “b”: [1,],}') == {"a": "x", "b": [1]}
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("1:1 с Петей", True), ("Встреча 1-1", True), ("1-1 weekly", True), ("one-on-one", True),
+    ("Q1-1 планы", False), ("1 - 1 ноября", False), ("11-12", False),
+])
+def test_one_on_one_pattern(title, expected):
+    from mostik_engine.meeting_templates import ONE_ON_ONE_RE
+    assert bool(ONE_ON_ONE_RE.search(title)) is expected

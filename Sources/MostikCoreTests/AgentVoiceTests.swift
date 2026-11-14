@@ -59,6 +59,9 @@ func runAgentVoiceTests() {
         equal(VoiceSend.detect("Проверь отправку").submit, false, "другое слово")
         equal(VoiceSend.detect("Проверь sender").submit, false, "часть слова")
         equal(VoiceSend.detect("Напиши письмо и, отправь").submit, true, "запятая — граница фразы")
+        equal(VoiceSend.detect("Напиши Пете: я всё send").submit, false, "после двоеточия — диктуемое сообщение")
+        equal(VoiceSend.detect("Напиши Пете: я всё, отправь").submit, true, "после двоеточия, но через запятую — команда")
+        equal(VoiceSend.detect("Тесты: зелёные. Поправь доку отправь").submit, true, "двоеточие в прошлой фразе не мешает")
         equal(VoiceSend.detect(""), VoiceSendResult(text: "", submit: false))
         equal(VoiceSend.terminalNewlines("a\r\nb\rc\nd"), "a\nb\nc\nd", "в терминал — LF")
     }

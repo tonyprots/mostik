@@ -25,6 +25,7 @@ final class MeetingAssistController {
     private var delta = FrameDelta()
     private var frameTimer: Timer?
     private var capturing = false
+    private var loggedFirstFrame = false
     /// Остановленные встречи, чей журнал пересчитать по готовой расшифровке.
     private var awaitingTranscript: Set<String> = []
 
@@ -87,6 +88,7 @@ final class MeetingAssistController {
         assist.hint = nil
         assist.judgeNote = nil
         assist.framesCount = 0
+        loggedFirstFrame = false
         // Слайды — из Настроек; выключенные посреди встречи снова включатся в следующей.
         assist.framesConsent = model.settings.meetingAssist.slides
         assist.framesState = assist.framesConsent ? .watching : .off
@@ -220,6 +222,7 @@ final class MeetingAssistController {
         case .capture:
             break
         default:
+            if assist.framesState != .blocked(decision) { AppLog.shared.event("frames", "blocked: \(decision)") }
             assist.framesState = .blocked(decision)
             return
         }
@@ -228,12 +231,31 @@ final class MeetingAssistController {
         let at = model.meetingElapsed
         Task { [weak self] in
             defer { self?.capturing = false }
-            guard let window = try? await MeetingFrameCapture.callWindow() else {
+            let lookup: MeetingFrameCapture.WindowLookup
+            do {
+                lookup = try await MeetingFrameCapture.findCallWindow()
+            } catch {
+                AppLog.shared.event("frames", "window list failed: \(error.localizedDescription)")
                 self?.assist.framesState = .noWindow
                 return
             }
-            guard let image = try? await MeetingFrameCapture.capture(window) else { return }
-            self?.frameCaptured(image, at: at, folder: folder)
+            guard let window = lookup.window else {
+                if self?.assist.framesState != .noWindow {
+                    AppLog.shared.event("frames", "no call window: mic=\(lookup.micApp ?? "none") candidates=\(lookup.candidates)")
+                }
+                self?.assist.framesState = .noWindow
+                return
+            }
+            do {
+                let image = try await MeetingFrameCapture.capture(window)
+                if self?.assist.framesCount == 0, self?.loggedFirstFrame != true {
+                    self?.loggedFirstFrame = true
+                    AppLog.shared.event("frames", "capturing \(window.owningApplication?.applicationName ?? "?") (\(lookup.rule))")
+                }
+                self?.frameCaptured(image, at: at, folder: folder)
+            } catch {
+                AppLog.shared.event("frames", "capture failed: \(error.localizedDescription)")
+            }
         }
     }
 

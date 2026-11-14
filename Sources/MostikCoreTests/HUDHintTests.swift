@@ -5,6 +5,23 @@ import MostikCore
 // при удержании — «Отпустите правый ⌥», без рук — «Стоп ⌥»;
 // отмена словом «esc», без глифа ⎋ (мелким он читается как ↺ «повторить»).
 func runHUDHintTests() {
+    // Пауза: пункты видны сразу и нажимаются; запись заканчивается кнопкой в любом режиме.
+    equal(HUDHint.pausedItems(holdKey: "rightOption").map(\.key), ["⌥", "esc"], "на паузе — вставить и отмена")
+    var held = DictationMachine(makeSessionID: { "p1" })
+    _ = held.handle(.holdBegan(at: 0))
+    _ = held.handle(.latch)   // пауза при удержании переводит запись в режим без рук
+    equal(held.handle(.holdEnded(at: 2)), [], "на паузе отпускание клавиши текст не отправляет")
+    equal(held.handle(.finish(at: 5)), [.stopRecording(session: "p1")], "«Вставить» заканчивает запись")
+    equal(held.handle(.holdEnded(at: 6)), [], "отпускание после «Вставить» ничего не значит")
+    var holding = DictationMachine(makeSessionID: { "p2" })
+    _ = holding.handle(.holdBegan(at: 0))
+    equal(holding.handle(.finish(at: 3)), [.stopRecording(session: "p2")], "«Вставить» работает и пока клавишу держат")
+    var cancelled = DictationMachine(makeSessionID: { "p3" })
+    _ = cancelled.handle(.togglePressed(at: 0))
+    equal(cancelled.handle(.abort), [.discardRecording(session: "p3")], "«Отмена» сбрасывает запись")
+    var idle = DictationMachine()
+    equal(idle.handle(.finish(at: 1)), [], "без записи «Вставить» ничего не делает")
+
     let was = UIText.isRussian
     defer { UIText.isRussian = was }
     UIText.isRussian = true

@@ -40,6 +40,13 @@ public final class Recorder: @unchecked Sendable {
     public var onFirstBuffer: (() -> Void)?
     /// Вход отдаёт цифровые нули: шаг восстановления уже сделан (`SilentInputWatch`); из очереди записи.
     public var onSilentInput: ((SilentInputWatch.Action) -> Void)?
+    /// Вход не запустился посреди записи: идут повторы, вход потерян или вернулся; из очереди записи.
+    public var onInputTrouble: ((InputTrouble) -> Void)?
+    public enum InputTrouble: Equatable, Sendable { case retrying, lost, recovered }
+    /// Живая проверка (`MostikMicCheck`): вернуть ошибку — запуск входа сорвётся. В приложении не задаётся.
+    @_spi(Testing) public var startFault: (() -> Error?)?
+    /// Живая проверка: false — закрывать запись сразу, как до правки, чтобы измерить хвост.
+    @_spi(Testing) public var drainsTail = true
 
     /// Пересоздаётся при смене входа: `inputNode` остаётся привязан к устройству,
     /// которое было по умолчанию, когда движок создавали (`WarmMicPolicy`). Выбранный в Настройках
@@ -54,6 +61,8 @@ public final class Recorder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "mostik.recorder")
     private let converterLock = NSLock()
     private var converter: AVAudioConverter?
+    /// Уровень волны (под `converterLock`, поток тапа); пол шума живёт и между диктовками.
+    private var meter = LevelMeter(sampleRate: Recorder.sampleRate)
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Recorder.sampleRate,
                                        channels: 1, interleaved: false)!
     private var tapInstalled = false
@@ -70,6 +79,13 @@ public final class Recorder: @unchecked Sendable {
     private var silence = SilentInputWatch()
     /// Внешние сигналы (смена входа, устройств, конфигурации движка) — пачкой, после тишины (`WarmMicPolicy.Settle`).
     private var settle = WarmMicPolicy.Settle()
+    /// Повторы запуска входа после сбоя (`WarmMicPolicy.Retry`).
+    private var retry = WarmMicPolicy.Retry()
+    /// О беде со входом уже сказали — успех надо объявить.
+    private var troubleShown = false
+    /// Хвост записи: `end()` ждёт буфер, накрывающий момент отпускания клавиши (`TailDrain`).
+    private var tail: TailDrain?
+    private var tailSignal: DispatchSemaphore?
 
     public init() {
         observe(engine)
@@ -173,6 +189,7 @@ public final class Recorder: @unchecked Sendable {
             firstBufferPending = true
             silence = SilentInputWatch()
             recording = true; paused = false
+            troubleShown = false
             if warmActive, !ring.isEmpty {
                 consume(ring)
                 ring.removeAll(keepingCapacity: true)
@@ -183,7 +200,11 @@ public final class Recorder: @unchecked Sendable {
                 // без перезапуска приложения вход так и отдавал нули. Собираем заново.
                 let staleProcessing = boundDevice != nil && engine.inputNode.isVoiceProcessingEnabled != voiceProcessing
                 if staleProcessing || (current != nil && boundDevice != nil && boundDevice != current) { rebuildEngine() }
-                do { try startEngine() } catch {
+                do {
+                    // Старый движок мог остаться привязан к ушедшему входу — вторая попытка на новом.
+                    do { try startEngine() } catch { rebuildEngine(); try startEngine() }
+                } catch {
+                    stopEngine()
                     recording = false; paused = false
                     writer?.close(); writer = nil
                     try? FileManager.default.removeItem(at: url)
@@ -193,12 +214,30 @@ public final class Recorder: @unchecked Sendable {
         }
     }
 
-    /// Закончить запись: дописать хвост, закрыть WAV.
+    /// Закончить запись: дождаться последнего буфера (до `TailDrain.timeout`), закрыть WAV.
     @discardableResult
-    public func end() -> RecordingFile? {
-        queue.sync {
+    public func end() -> RecordingFile? { finish(drain: true) }
+
+    /// Последний буфер тапа ещё в пути: без ожидания терялись последние 50–100 мс речи.
+    private func drainTail() {
+        let signal = DispatchSemaphore(value: 0)
+        let armed: Bool = queue.sync {
+            guard recording, !paused, engineRunning else { return false }
+            tail = TailDrain(requestedAt: AVAudioTime.seconds(forHostTime: mach_absolute_time()))
+            tailSignal = signal
+            return true
+        }
+        guard armed else { return }
+        _ = signal.wait(timeout: .now() + TailDrain.timeout)
+        queue.sync { tail = nil; tailSignal = nil }
+    }
+
+    private func finish(drain: Bool) -> RecordingFile? {
+        if drain, drainsTail { drainTail() }
+        return queue.sync {
             guard recording, let writer else { return nil }
             recording = false; paused = false
+            retry.succeeded(); troubleShown = false
             if !chunk.isEmpty { onPCM?(Data(chunk)); chunk.removeAll(keepingCapacity: true) }
             writer.close()
             self.writer = nil
@@ -207,9 +246,9 @@ public final class Recorder: @unchecked Sendable {
         }
     }
 
-    /// Отменить запись и удалить файл.
+    /// Отменить запись и удалить файл; хвост не ждём.
     public func discard() {
-        if let file = end() { try? FileManager.default.removeItem(at: file.url) }
+        if let file = finish(drain: false) { try? FileManager.default.removeItem(at: file.url) }
     }
 
     /// Вход по умолчанию и тип его подключения; nil — входа нет.
@@ -241,6 +280,7 @@ public final class Recorder: @unchecked Sendable {
     }
 
     private func startEngine() throws {
+        if let fault = startFault?() { throw fault }
         let input = engine.inputNode
         // Выбранный микрофон — только этому движку, до формата и тапа; системный вход не трогаем.
         let chosen = currentInput()
@@ -254,14 +294,37 @@ public final class Recorder: @unchecked Sendable {
         if tapInstalled { input.removeTap(onBus: 0) }
         // ~50 мс на буфер: волна в HUD живая, нагрузки мало.
         let frames = AVAudioFrameCount(max(256, format.sampleRate / 20))
-        input.installTap(onBus: 0, bufferSize: frames, format: format) { [weak self] buffer, _ in
-            self?.process(buffer)
+        input.installTap(onBus: 0, bufferSize: frames, format: format) { [weak self] buffer, when in
+            self?.process(buffer, at: when)
         }
         tapInstalled = true
         engine.prepare()
         try engine.start()
         engineRunning = true
         boundDevice = chosen?.device
+        retry.succeeded()
+        if troubleShown {
+            troubleShown = false
+            if recording { onInputTrouble?(.recovered) }
+        }
+    }
+
+    /// Запуск входа сорвался: повтор на новом движке с паузой; посреди записи — сказать об этом.
+    private func startFailed(_ error: Error, _ what: String) {
+        NSLog("Mostik recorder: \(what) failed: \(error)")
+        stopEngine()
+        guard recording || warmActive else { return }
+        guard let plan = retry.next() else {
+            if recording { troubleShown = true; onInputTrouble?(.lost) }
+            return
+        }
+        if recording { troubleShown = true; onInputTrouble?(.retrying) }
+        queue.asyncAfter(deadline: .now() + plan.delay) { [weak self] in
+            guard let self, self.retry.isCurrent(plan.generation), !self.engineRunning,
+                  self.recording || self.warmActive else { return }
+            self.rebuildEngine()
+            do { try self.startEngine() } catch { self.startFailed(error, "retry") }
+        }
     }
 
     private func stopEngine() {
@@ -307,13 +370,16 @@ public final class Recorder: @unchecked Sendable {
                 try startEngine()
             }
         } catch {
-            NSLog("Mostik recorder: reconfigure failed: \(error)")
+            startFailed(error, "reconfigure")
         }
         if !warmActive { ring.removeAll() }
     }
 
     /// Поток тапа: конвертация и уровень, дальше — на `queue`.
-    private func process(_ buffer: AVAudioPCMBuffer) {
+    private func process(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
+        let audioEnd: Double? = when.isHostTimeValid
+            ? AVAudioTime.seconds(forHostTime: when.hostTime) + Double(buffer.frameLength) / buffer.format.sampleRate
+            : nil
         converterLock.lock()
         guard let converter else { converterLock.unlock(); return }
         let ratio = Recorder.sampleRate / buffer.format.sampleRate
@@ -329,24 +395,21 @@ public final class Recorder: @unchecked Sendable {
             status.pointee = .haveData
             return buffer
         }
-        converterLock.unlock()
-        guard error == nil, let samples = out.floatChannelData?[0] else { return }
+        guard error == nil, let samples = out.floatChannelData?[0], out.frameLength > 0 else {
+            converterLock.unlock(); return
+        }
         let count = Int(out.frameLength)
-        guard count > 0 else { return }
+        let level = meter.level(samples, count: count, sampleRate: Recorder.sampleRate)
+        converterLock.unlock()
 
-        var sum: Float = 0
         var pcm = Data(count: count * 2)
         pcm.withUnsafeMutableBytes { raw in
             let dst = raw.bindMemory(to: Int16.self)
             for i in 0..<count {
                 let s = max(-1, min(1, samples[i]))
-                sum += s * s
                 dst[i] = Int16(s * 32_767).littleEndian
             }
         }
-        let rms = (sum / Float(count)).squareRoot()
-        let db = 20 * log10(max(rms, 1e-7))
-        let level = max(0, min(1, (db + 55) / 50))
 
         queue.async {
             if self.recording, self.paused {
@@ -354,6 +417,10 @@ public final class Recorder: @unchecked Sendable {
             } else if self.recording {
                 self.onLevel?(level)
                 self.consume(pcm)
+                if self.tail?.feed(end: audioEnd) == true {
+                    self.tail = nil
+                    self.tailSignal?.signal()
+                }
             } else if self.warmActive {
                 self.ring.append(pcm)
                 if self.ring.count > Recorder.preRollBytes {
@@ -402,7 +469,7 @@ extension Recorder {
     /// Новый движок на том же входе; запись и WAV продолжаются.
     private func restartForSilence() {
         rebuildEngine()
-        do { try startEngine() } catch { NSLog("Mostik recorder: restart after silence failed: \(error)") }
+        do { try startEngine() } catch { startFailed(error, "restart after silence") }
     }
 }
 

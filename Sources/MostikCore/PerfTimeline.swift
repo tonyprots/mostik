@@ -108,13 +108,14 @@ public struct AXWalkBudget: Sendable {
     }
 }
 
-/// Уровень микрофона для волны (шаг 3, п. 12): рост мгновенный, спад экспонентой ~120 мс
-/// (×0,75 на тике 50 мс). Сглаживание — в данных, анимации у волны нет.
+/// Уровень микрофона для волны (шаг 3, п. 12): атака ~50 мс, спад ~150 мс на тике 50 мс.
+/// Прежний `max(sample, prev×0,75)` давал ступеньки. Сглаживание — в данных, анимации у волны нет.
 public enum LevelSmoothing {
-    public static let decay: Float = 0.75
+    public static let attack: Float = 0.7
+    public static let release: Float = 0.3
 
     public static func next(previous: Float, sample: Float) -> Float {
-        max(sample, previous * decay)
+        previous + (sample - previous) * (sample > previous ? attack : release)
     }
 
     /// Новый уровень в конец буфера; буфер едет лентой, старое уходит с начала.

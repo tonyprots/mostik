@@ -34,6 +34,7 @@ public struct MenuBarContentView: View {
                 VStack(spacing: 0) {
                     voiceRow
                     if !model.isMeetingRecording { meetingRow }
+                    if model.settings.polish.quickToggleAvailable { polishRow }
                 }
             }
             section { recent }
@@ -182,6 +183,58 @@ public struct MenuBarContentView: View {
         .disabled(phase == .busy)
         .help(L("Запись без удержания клавиши; текст вставится туда, где стоял курсор. Или держите \(HoldKeys.name(model.settings.holdKey))" + doubleHint(ru: true) + ".",
                 "Records without holding a key; the text goes where your cursor was. Or hold \(HoldKeys.name(model.settings.holdKey))" + doubleHint(ru: false) + "."))
+    }
+
+    // MARK: Причёсывание
+
+    /// Быстрый выключатель причёсывания (2026-11-09): без похода в Настройки, например когда
+    /// Claude не вошёл и входить сейчас не хочется. Меню не закрывает.
+    private var polishRow: some View {
+        let polish = model.settings.polish
+        let on = polish.backend != .off
+        let binding = Binding<Bool>(get: { model.settings.polish.backend != .off }, set: { value in
+            var s = model.settings
+            s.polish.setQuickEnabled(value)
+            model.onUpdateSettings(s)
+        })
+        return HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(on ? Palette.accent : Palette.inkTertiary)
+                .frame(width: 18, height: 18)
+                .accessibilityHidden(true)
+            Text(L("Причёсывание", "Polishing"))
+                .font(TType.body)
+                .foregroundStyle(Palette.ink)
+                .fixedSize()
+            Spacer(minLength: DS.Space.xs)
+            Text(polishNote(polish.quickBackend, on: on))
+                .font(TType.callout)
+                .foregroundStyle(polishNeedsAttention(polish.quickBackend, on: on) ? Palette.doubt : Palette.inkTertiary)
+                .lineLimit(1)
+            // Свой переключатель, как в карточке встречи выше: один вид в меню и честный снимок.
+            Toggle(isOn: binding) { EmptyView() }
+                .toggleStyle(MostikToggleStyle())
+                .fixedSize()
+                .accessibilityLabel(L("Причёсывание", "Polishing"))
+        }
+        .padding(.horizontal, DS.Space.xs)
+        .frame(height: DS.hit + 2)
+        .help(L("Убирает «э», повторы и самоисправления. Выключено — текст вставляется как сказано.",
+                "Removes “um”, repeats and self-corrections. Off — text goes in as spoken."))
+    }
+
+    private func polishNote(_ backend: PolishBackend, on: Bool) -> String {
+        if polishNeedsAttention(backend, on: on) { return L("нет входа", "signed out") }
+        switch backend {
+        case .claude: return "Claude"
+        case .mlx: return L("на этом Mac", "on this Mac")
+        case .off: return ""
+        }
+    }
+
+    private func polishNeedsAttention(_ backend: PolishBackend, on: Bool) -> Bool {
+        on && backend == .claude && model.polishReasons["claude"] == "login"
     }
 
     // MARK: Встреча

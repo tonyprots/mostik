@@ -257,6 +257,9 @@ public struct PendingTextFix: Equatable, Sendable {
     public var entryID: String
     public var text: String
     public var at: Date
+    /// Итог в плашке (nil — «Исправлено в тексте»); `quiet` — отказ без карточки (причёсывание после вставки).
+    public var summary: String?
+    public var quiet = false
     public init(entryID: String, text: String, at: Date = Date()) {
         self.entryID = entryID; self.text = text; self.at = at
     }

@@ -37,6 +37,19 @@ public final class MeetingRecorder: @unchecked Sendable {
 
     /// Уровни (0…1) микрофона и системы; вызывается на главной очереди ~10 раз в секунду.
     public var onLevels: ((Float, Float) -> Void)?
+    /// Дорожка перестала писаться на диск (нет места, том отключён); один раз за запись, на главной очереди.
+    public var onWriteFailure: ((String) -> Void)?
+    private let writeFailed = NSLock()
+    private var writeFailureReported = false
+
+    private func reportWriteFailure(_ message: String) {
+        let first: Bool = writeFailed.withLock {
+            defer { writeFailureReported = true }
+            return !writeFailureReported
+        }
+        guard first else { return }
+        DispatchQueue.main.async { [weak self] in self?.onWriteFailure?(message) }
+    }
 
     public let folder: URL
     public var micURL: URL { folder.appendingPathComponent("mic.wav") }
@@ -72,9 +85,20 @@ public final class MeetingRecorder: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var micConverter: AVAudioConverter?
     private var configObserver: NSObjectProtocol?
+    /// Разрыв в дорожке микрофона на время перенастройки входа — заполняется тишиной (`TrackGap`).
+    private var micGap = TrackGap()
+    /// Когда кончился последний буфер микрофона, монотонные часы; 0 — буферов не было.
+    private var micAudioEnd: Double = 0
+    private static var uptime: Double { ProcessInfo.processInfo.systemUptime }
 
     // Звук системы.
     private var systemTap: AnyObject?  // SystemAudioTap, macOS 14.2+
+    /// Разрыв в дорожке системы на время пересборки тапа (сменили устройство вывода) — тишиной, как у микрофона.
+    private var systemGap = TrackGap()
+    private var systemAudioEnd: Double = 0
+    /// Когда дорожка системы начата (монотонные часы): от этого момента считается разрыв, если тап
+    /// пересобрали раньше, чем он отдал первый буфер.
+    private var systemStartedAt: Double = 0
 
     /// Микрофон из Настроек (`MostikSettings.micDeviceUID`); пусто — системный вход (R3b, `MicChoice`).
     public var micDeviceUID = ""
@@ -115,6 +139,7 @@ public final class MeetingRecorder: @unchecked Sendable {
             }
             let mic = try MeetingWAVStream(url: url(.mic), sampleRate: Int(Self.sampleRate))
             let system = try MeetingWAVStream(url: url(.system), sampleRate: Int(Self.sampleRate))
+            for stream in [mic, system] { stream.onFailure = { [weak self] in self?.reportWriteFailure($0) } }
             lock.lock()
             micWriter = mic
             systemWriter = system
@@ -133,7 +158,12 @@ public final class MeetingRecorder: @unchecked Sendable {
     public var isPaused: Bool {
         get { lock.withLock { paused } }
         set {
-            lock.withLock { paused = newValue }
+            lock.withLock {
+                guard paused != newValue else { return }
+                paused = newValue
+                if newValue { micGap.pause(at: Self.uptime); systemGap.pause(at: Self.uptime) }
+                else { micGap.resume(at: Self.uptime); systemGap.resume(at: Self.uptime) }
+            }
             if newValue { report(mic: 0, system: 0) }
         }
     }
@@ -155,6 +185,7 @@ public final class MeetingRecorder: @unchecked Sendable {
         let index = lock.withLock { segmentList.filter { $0.track == track }.count } + 1
         let name = MeetingSegment.fileName(track, index: index)
         let writer = try MeetingWAVStream(url: folder.appendingPathComponent(name), sampleRate: Int(Self.sampleRate))
+        writer.onFailure = { [weak self] in self?.reportWriteFailure($0) }
         switch track {
         case .mic:
             lock.lock()
@@ -165,6 +196,8 @@ public final class MeetingRecorder: @unchecked Sendable {
             configObserver = nil
             micConverter = nil
             micWriter = writer
+            // Новый сегмент несёт своё смещение — разрыв прежнего в него не переносим.
+            micGap = TrackGap(); micAudioEnd = 0
             segmentList.append(MeetingSegment(track: .mic, file: name, offset: offset))
             lock.unlock()
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -180,6 +213,7 @@ public final class MeetingRecorder: @unchecked Sendable {
             let old = systemWriter
             systemTap = nil
             systemWriter = writer
+            systemGap = TrackGap(); systemAudioEnd = 0
             segmentList.append(MeetingSegment(track: .system, file: name, offset: offset))
             lock.unlock()
             if #available(macOS 14.2, *), let tap = tap as? SystemAudioTap { tap.stop() }
@@ -214,6 +248,8 @@ public final class MeetingRecorder: @unchecked Sendable {
         systemWriter = nil
         running = false
         paused = false
+        micGap = TrackGap(); micAudioEnd = 0
+        systemGap = TrackGap(); systemAudioEnd = 0
         lastBufferAt = [:]
         peaks = [:]
         lock.unlock()
@@ -271,12 +307,18 @@ public final class MeetingRecorder: @unchecked Sendable {
         }
     }
 
+    /// Живая проверка (`MostikMicCheck`): то же, что делает смена устройства посреди встречи.
+    @_spi(Testing) public func simulateInputChange() { reconfigureMic() }
+    /// Живая проверка: false — не заполнять разрыв, как до правки.
+    @_spi(Testing) public var fillsGaps = true
+
     private func reconfigureMic() {
         controlLock.lock()
         defer { controlLock.unlock() }
         lock.lock()
         let engine = self.engine
         let isRunning = running
+        if engine != nil, isRunning, micAudioEnd > 0 { micGap.open(lastAudioEnd: micAudioEnd, paused: paused) }
         lock.unlock()
         guard let engine, isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
@@ -298,8 +340,15 @@ public final class MeetingRecorder: @unchecked Sendable {
         let writer = micWriter
         let skip = paused
         lastBufferAt[.mic] = Date().timeIntervalSince1970
+        let now = Self.uptime
+        let length = Double(buffer.frameLength) / buffer.format.sampleRate
+        // Пока вход перенастраивался, звук не шёл: без тишины на месте разрыва дорожка съезжает
+        // раньше относительно звука системы, и реплики расходятся по времени.
+        let gap = skip ? 0 : micGap.close(bufferStart: now - length)
+        micAudioEnd = now
         lock.unlock()
         guard let converter, let writer else { return }
+        if gap > 0, fillsGaps { writer.append(Data(count: Int(gap * Self.sampleRate) * 2)) }
         // Конвертер гоняем и на паузе: у ресемплера своё состояние, без входа он «щёлкнет» на продолжении.
         guard let pcm = MeetingAudio.convert(buffer, with: converter), !skip else { return }
         writer.append(pcm.int16)
@@ -314,10 +363,22 @@ public final class MeetingRecorder: @unchecked Sendable {
         let tap = SystemAudioTap { [weak self] buffer in
             self?.handleSystem(buffer)
         }
+        tap.clockUID = systemClockUID
+        // Тап пересобирается под новое устройство вывода: пока он стоит, звук не идёт.
+        tap.onInterruption = { [weak self] in self?.systemInterrupted() }
         try tap.start()
         lock.lock()
         systemTap = tap
+        systemStartedAt = Self.uptime
         lock.unlock()
+    }
+
+    private func systemInterrupted() {
+        lock.withLock {
+            guard running else { return }
+            // Буферов ещё не было (агрегат на устройстве, которое молчит) — тишина идёт с начала дорожки.
+            systemGap.open(lastAudioEnd: systemAudioEnd > 0 ? systemAudioEnd : systemStartedAt, paused: paused)
+        }
     }
 
     private func handleSystem(_ pcm: MeetingAudio.Converted) {
@@ -326,10 +387,38 @@ public final class MeetingRecorder: @unchecked Sendable {
         let skip = paused
         lastBufferAt[.system] = Date().timeIntervalSince1970
         if !skip { peaks[.system] = max(peaks[.system] ?? 0, pcm.level) }
+        let now = Self.uptime
+        let length = Double(pcm.int16.count / 2) / Self.sampleRate
+        // Пока тап пересобирался под новое устройство вывода, буферов не было: без тишины на месте
+        // разрыва дорожка собеседников съезжает раньше относительно микрофона.
+        let gap = skip ? 0 : systemGap.close(bufferStart: now - length)
+        systemAudioEnd = now
         lock.unlock()
         guard !skip else { return }
+        if gap > 0, fillsGaps { writer?.append(Data(count: Int(gap * Self.sampleRate) * 2)) }
         writer?.append(pcm.int16)
         report(system: pcm.level)
+    }
+
+    /// Живая проверка (`MostikMicCheck`): пересобрать тап так же, как при смене устройства вывода.
+    @_spi(Testing) public func simulateOutputChange() {
+        if #available(macOS 14.2, *) { (lock.withLock { systemTap } as? SystemAudioTap)?.rebuild(reason: "проверка") }  // l10n-guard: журнал
+    }
+    /// Живая проверка: то, что делает уведомление Core Audio о смене вывода или частоты, — сверить и пересобрать.
+    @_spi(Testing) public func checkSystemOutput() {
+        if #available(macOS 14.2, *) { (lock.withLock { systemTap } as? SystemAudioTap)?.check() }
+    }
+    /// Живая проверка: привязать агрегат к этому устройству вместо вывода по умолчанию — так выглядит
+    /// запись, начатая на одном устройстве, когда вывод уже сменили. Меняется и на ходу.
+    @_spi(Testing) public var systemClockUID: String? {
+        didSet {
+            if #available(macOS 14.2, *) { (lock.withLock { systemTap } as? SystemAudioTap)?.clockUID = systemClockUID }
+        }
+    }
+    /// Живая проверка: к чему привязан тап и сколько раз пересобирался.
+    @_spi(Testing) public var systemTapState: (binding: SystemTapBinding, rebuilds: Int)? {
+        guard #available(macOS 14.2, *), let tap = lock.withLock({ systemTap }) as? SystemAudioTap else { return nil }
+        return tap.snapshot
     }
 
     // MARK: - Уровни
@@ -417,6 +506,9 @@ final class MeetingWAVStream: @unchecked Sendable {
     private var dataBytes = 0
     private var bytesSincePatch = 0
     private var closed = false
+    /// Первая неудачная запись на диск; дальше не повторяется.
+    var onFailure: ((String) -> Void)?
+    private var failed = false
 
     init(url: URL, sampleRate: Int) throws {
         self.url = url
@@ -435,6 +527,7 @@ final class MeetingWAVStream: @unchecked Sendable {
                 try handle.write(contentsOf: data)
             } catch {
                 NSLog("Mostik: запись \(url.lastPathComponent) не удалась: \(error)")
+                if !failed { failed = true; onFailure?(error.localizedDescription) }
                 return
             }
             dataBytes += data.count
@@ -502,17 +595,53 @@ final class MeetingWAVStream: @unchecked Sendable {
 /// Глобальный тап на весь вывод системы, кроме собственного процесса,
 /// в приватном aggregate-устройстве. Порядок разбора обратный созданию:
 /// IOProc → aggregate → tap.
+///
+/// Тап глобальный и слышит приложения на любом устройстве, но часы и частоту агрегату даёт одно —
+/// вывод по умолчанию на момент сборки. Сменили вывод (наушники) или у устройства сменилась частота —
+/// тап пересобирается под новое (`SystemTapFollow`); о перерыве узнаёт `onInterruption`.
 @available(macOS 14.2, *)
 final class SystemAudioTap: @unchecked Sendable {
     typealias Sink = (MeetingAudio.Converted) -> Void
 
     private let sink: Sink
     private let queue = DispatchQueue(label: "mostik.meeting.system-tap", qos: .userInitiated)
+    /// Уведомления Core Audio и отложенная сверка — отдельно от звука.
+    private let listenQueue = DispatchQueue(label: "mostik.meeting.system-tap.listen", qos: .utility)
+    /// Сборка, пересборка и остановка — по одной. Рекурсивный: остановка зовётся и из `deinit`.
+    private let control = NSRecursiveLock()
+    /// Формат и пересчёт читает колбэк звука, меняет пересборка.
+    private let state = NSLock()
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
+    private var active = false
+    private var follow = SystemTapFollow(bound: SystemTapBinding(outputUID: nil, rate: 0))
+    private var rebuilds = 0
+    private var lastRebuildAt: Double = 0
+    private var pendingCheck: DispatchWorkItem?
+    private struct Listener {
+        let object: AudioObjectID
+        var address: AudioObjectPropertyAddress
+        let block: AudioObjectPropertyListenerBlock
+    }
+    /// На системном объекте — на всю запись; на агрегате и устройстве вывода — до пересборки.
+    private var systemListeners: [Listener] = []
+    private var deviceListeners: [Listener] = []
+
+    /// Тап сейчас встанет на пересборку: буферов не будет, пока она идёт.
+    var onInterruption: (() -> Void)?
+    /// Проверка: устройство, к которому привязать агрегат, вместо вывода по умолчанию.
+    var clockUID: String? {
+        get { state.withLock { clockOverride } }
+        set { state.withLock { clockOverride = newValue } }
+    }
+    private var clockOverride: String?
+    var snapshot: (binding: SystemTapBinding, rebuilds: Int) {
+        control.lock(); defer { control.unlock() }
+        return (follow.bound, rebuilds)
+    }
 
     init(sink: @escaping Sink) {
         self.sink = sink
@@ -521,10 +650,13 @@ final class SystemAudioTap: @unchecked Sendable {
     deinit { stop() }
 
     func start() throws {
+        control.lock(); defer { control.unlock() }
         do {
-            try createTap()
-            try createAggregate()
-            try startIO()
+            try build()
+            active = true
+            listen(on: AudioObjectID(kAudioObjectSystemObject),
+                   [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice],
+                   into: &systemListeners)
         } catch {
             stop()
             throw error
@@ -532,6 +664,29 @@ final class SystemAudioTap: @unchecked Sendable {
     }
 
     func stop() {
+        control.lock(); defer { control.unlock() }
+        active = false
+        pendingCheck?.cancel()
+        pendingCheck = nil
+        unlisten(&systemListeners)
+        dismantle()
+    }
+
+    /// Тап, агрегат, запуск — и привязка, под которую всё собрано.
+    private func build() throws {
+        try createTap()
+        let outputUID = try createAggregate()
+        try startIO()
+        follow.rebuilt(SystemTapBinding(outputUID: outputUID, rate: state.withLock { sourceFormat?.sampleRate ?? 0 }))
+        // Частота агрегата и самого устройства: её меняют и без смены вывода (плеер под файл, «Настройка Audio-MIDI»).
+        listen(on: aggregateID, [kAudioDevicePropertyNominalSampleRate], into: &deviceListeners)
+        if let outputUID, let device = CoreAudioQuery.device(uid: outputUID) {
+            listen(on: device, [kAudioDevicePropertyNominalSampleRate], into: &deviceListeners)
+        }
+    }
+
+    private func dismantle() {
+        unlisten(&deviceListeners)
         if aggregateID != kAudioObjectUnknown, let procID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -545,8 +700,82 @@ final class SystemAudioTap: @unchecked Sendable {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
-        converter = nil
+        state.withLock { converter = nil }
     }
+
+    // MARK: слежение за устройством вывода
+
+    private func listen(on object: AudioObjectID, _ selectors: [AudioObjectPropertySelector], into list: inout [Listener]) {
+        for selector in selectors {
+            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.scheduleCheck() }
+            if AudioObjectAddPropertyListenerBlock(object, &address, listenQueue, block) == noErr {
+                list.append(Listener(object: object, address: address, block: block))
+            }
+        }
+    }
+
+    private func unlisten(_ list: inout [Listener]) {
+        for var listener in list {
+            AudioObjectRemovePropertyListenerBlock(listener.object, &listener.address, listenQueue, listener.block)
+        }
+        list.removeAll()
+    }
+
+    /// Уведомления о смене устройства идут пачкой — сверяемся, когда стихли.
+    private func scheduleCheck(after delay: TimeInterval = SystemTapFollow.settle) {
+        control.lock(); defer { control.unlock() }
+        guard active else { return }
+        pendingCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.check() }
+        pendingCheck = work
+        listenQueue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Вывод по умолчанию и частота агрегата — те же, под которые собран тап? Нет — пересборка.
+    func check() {
+        control.lock(); defer { control.unlock() }
+        guard active else { return }
+        let rate = aggregateID != kAudioObjectUnknown
+            ? CoreAudioQuery.float64(aggregateID, kAudioDevicePropertyNominalSampleRate) ?? 0 : 0
+        let current = SystemTapBinding(outputUID: wantedOutputUID(), rate: rate)
+        guard follow.decide(current: current) == .rebuild else { return }
+        let since = ProcessInfo.processInfo.systemUptime - lastRebuildAt
+        guard since >= SystemTapFollow.minSpacing else {
+            scheduleCheck(after: SystemTapFollow.minSpacing - since)
+            return
+        }
+        rebuild(reason: "вывод \(follow.bound.outputUID ?? "—") на \(follow.bound.rate) Гц → \(current.outputUID ?? "—") на \(rate) Гц")  // l10n-guard: журнал
+    }
+
+    private func wantedOutputUID() -> String? { clockUID ?? CoreAudioQuery.defaultOutputUID() }
+
+    /// Разобрать и собрать заново под нынешнее устройство вывода. Не вышло (устройство ещё не готово) —
+    /// несколько повторов; дальше замолчавшую дорожку перезапустит сторож встречи новым сегментом.
+    func rebuild(reason: String) {
+        control.lock(); defer { control.unlock() }
+        guard active else { return }
+        NSLog("Mostik: звук системы пересобирается — \(reason)")
+        lastRebuildAt = ProcessInfo.processInfo.systemUptime
+        onInterruption?()
+        dismantle()
+        do {
+            try build()
+            rebuilds += 1
+        } catch {
+            dismantle()
+            NSLog("Mostik: звук системы не пересобрался: \(error.localizedDescription)")
+            if let retry = follow.failed() {
+                pendingCheck?.cancel()
+                let work = DispatchWorkItem { [weak self] in self?.rebuild(reason: "повтор") }  // l10n-guard: журнал
+                pendingCheck = work
+                listenQueue.asyncAfter(deadline: .now() + retry, execute: work)
+            }
+        }
+    }
+
+    // MARK: сборка
 
     private var tapUUID = UUID()
 
@@ -555,6 +784,8 @@ final class SystemAudioTap: @unchecked Sendable {
         if let own = CoreAudioQuery.processObject(pid: getpid()) {
             excluded.append(own)
         }
+        // У каждой сборки свой тап: агрегат ссылается на него по UUID.
+        tapUUID = UUID()
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
         description.uuid = tapUUID
         description.name = "Mostik meeting"
@@ -582,12 +813,15 @@ final class SystemAudioTap: @unchecked Sendable {
             throw MeetingRecorder.Failure.coreAudio(L("AVAudioConverter для тапа", "AVAudioConverter for the tap"), -1)
         }
         converter.downmix = true
-        sourceFormat = format
-        self.converter = converter
+        state.withLock {
+            sourceFormat = format
+            self.converter = converter
+        }
     }
 
-    private func createAggregate() throws {
-        let outputUID = CoreAudioQuery.defaultOutputUID()
+    /// Возвращает UID устройства, давшего агрегату часы.
+    private func createAggregate() throws -> String? {
+        let outputUID = wantedOutputUID()
         var description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Mostik Meeting Tap",
             kAudioAggregateDeviceUIDKey: "mostik.meeting.\(UUID().uuidString)",
@@ -612,6 +846,29 @@ final class SystemAudioTap: @unchecked Sendable {
             throw MeetingRecorder.Failure.coreAudio("AudioHardwareCreateAggregateDevice", status)
         }
         aggregateID = id
+        try adoptAggregateRate()
+        return outputUID
+    }
+
+    /// Буферы приходят с частотой агрегатного устройства (часы устройства вывода), а не с той,
+    /// что в описании тапа. При расхождении (динамики на 44,1 кГц, тап назвал 48) звук собеседников
+    /// записывался ускоренным на 8,8 %, и дорожка системы уезжала от микрофона — 5 минут за час.
+    private func adoptAggregateRate() throws {
+        guard let format = state.withLock({ sourceFormat }),
+              let rate = CoreAudioQuery.float64(aggregateID, kAudioDevicePropertyNominalSampleRate),
+              rate > 0, abs(rate - format.sampleRate) > 0.5 else { return }
+        var asbd = format.streamDescription.pointee
+        asbd.mSampleRate = rate
+        guard let actual = AVAudioFormat(streamDescription: &asbd),
+              let converter = AVAudioConverter(from: actual, to: MeetingRecorder.targetFormat) else {
+            throw MeetingRecorder.Failure.coreAudio(L("AVAudioConverter для тапа", "AVAudioConverter for the tap"), -1)
+        }
+        NSLog("Mostik: звук системы идёт на \(rate) Гц, тап назвал \(format.sampleRate) — берём частоту устройства")
+        converter.downmix = true
+        state.withLock {
+            sourceFormat = actual
+            self.converter = converter
+        }
     }
 
     private func startIO() throws {
@@ -631,7 +888,8 @@ final class SystemAudioTap: @unchecked Sendable {
     }
 
     private func handle(_ inputData: UnsafePointer<AudioBufferList>) {
-        guard let format = sourceFormat, let converter,
+        let (format, converter) = state.withLock { (sourceFormat, self.converter) }
+        guard let format, let converter,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: inputData, deallocator: nil),
               buffer.frameLength > 0
         else { return }
@@ -659,18 +917,38 @@ enum CoreAudioQuery {
         return status == noErr && object != kAudioObjectUnknown ? object : nil
     }
 
+    /// Устройство, на котором звучат приложения (вывод по умолчанию); нет его — устройство системных звуков.
     static func defaultOutputUID() -> String? {
+        for selector in [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var device = AudioObjectID(kAudioObjectUnknown)
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+                  device != kAudioObjectUnknown, let uid = string(device, kAudioDevicePropertyDeviceUID) else { continue }
+            return uid
+        }
+        return nil
+    }
+
+    /// Устройство по UID; nil — такого сейчас нет.
+    static func device(uid: String) -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+        var cfUID = uid as CFString
         var device = AudioObjectID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
-              device != kAudioObjectUnknown
-        else { return nil }
-        return string(device, kAudioDevicePropertyDeviceUID)
+        let status = withUnsafePointer(to: &cfUID) { qualifier in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
+                                       UInt32(MemoryLayout<CFString>.size), qualifier, &size, &device)
+        }
+        return status == noErr && device != kAudioObjectUnknown ? device : nil
     }
 
     static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
@@ -684,6 +962,15 @@ enum CoreAudioQuery {
         let status = AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value)
         guard status == noErr, let value else { return nil }
         return value.takeRetainedValue() as String
+    }
+
+    static func float64(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> Float64? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value
     }
 
     static func uint32(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> UInt32? {

@@ -542,19 +542,39 @@ def _close_truncated(text: str) -> str:
     return head + "".join(reversed(stack))
 
 
+_JSON_STRING = re.compile(r'("(?:\\.|[^"\\])*")')
+
+
+def _fix_outside_strings(text: str) -> str:
+    """Хвостовые запятые и питоновские None/True/False — только вне строк: текст значений не трогаем."""
+    parts = _JSON_STRING.split(text)
+    for index in range(0, len(parts), 2):
+        part = re.sub(r"\bNone\b", "null", parts[index])
+        part = re.sub(r"\bTrue\b", "true", part)
+        parts[index] = re.sub(r"\bFalse\b", "false", part)
+    joined = "".join(parts)
+    # Запятая перед закрывающей скобкой может стоять сразу после строки — чистим по целому тексту,
+    # но только там, где запятая и скобка не внутри строки.
+    out, last = [], 0
+    for match in re.finditer(r",(\s*[}\]])", joined):
+        inside = len(re.findall(r'(?<!\\)"', _JSON_STRING.sub('""', joined[:match.start()]))) % 2 == 1
+        if inside:
+            continue
+        out.append(joined[last:match.start()])
+        out.append(match.group(1))
+        last = match.end()
+    out.append(joined[last:])
+    return "".join(out)
+
+
 def repair_json(text: str) -> Any:
     """Детерминированная починка типичных поломок; None — не вышло."""
-    candidates = []
     base = _strip_fences(text)
-    candidates.append(base)
-    fixed = base.replace("“", '"').replace("”", '"').replace("„", '"')
-    fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
-    fixed = re.sub(r"(?<![\w\"])None(?![\w\"])", "null", fixed)
-    fixed = re.sub(r"(?<![\w\"])True(?![\w\"])", "true", fixed)
-    fixed = re.sub(r"(?<![\w\"])False(?![\w\"])", "false", fixed)
-    candidates.append(fixed)
-    closed = _close_truncated(fixed)
-    candidates.append(re.sub(r",\s*([}\]])", r"\1", closed))
+    plain = _fix_outside_strings(base)
+    # «Умные» кавычки как ограничители — крайняя мера: внутри значений они законны.
+    quoted = _fix_outside_strings(base.replace("“", '"').replace("”", '"').replace("„", '"'))
+    candidates = [base, plain, _fix_outside_strings(_close_truncated(plain)),
+                  quoted, _fix_outside_strings(_close_truncated(quoted))]
     for candidate in candidates:
         try:
             return json.loads(candidate)
@@ -573,8 +593,11 @@ class Caller:
     calls: int = 0
     repairs: int = 0
     llm_repairs: int = 0
+    guard: Any = None  # вызывается перед каждым запросом: встречу могли закрыть посреди длинной сводки
 
     def raw(self, system: str, user: str) -> str:
+        if self.guard is not None:
+            self.guard()
         self.calls += 1
         return complete(self.backend, system, user, self.timeout)
 
@@ -607,6 +630,7 @@ def complete(backend: Any, system: str, user: str, timeout: float) -> str:
         path = backend.path()
         if path is None:
             raise polish_mod.PolishUnavailable(polish_mod.CLAUDE_MISSING)
+        backend.require_network(path)  # без сети — сразу «офлайн», а не таймаут на каждом куске
         command, stdin = backend.invocation(path, system, user)
         if shutil.which("nice"):
             command = ["nice", "-n", str(NICE)] + command
@@ -1012,7 +1036,7 @@ class Outcome:
 def analyse(transcript: Transcript, backend: Any, mode: str = "detailed", *,
             emit: Emit | None = None, single_chars: int = SINGLE_CHARS, chunk_chars: int = CHUNK_CHARS,
             timeout: float = CALL_TIMEOUT_S, progress: dict[str, Any] | None = None,
-            style: Style | None = None, inputs: Inputs | None = None) -> Outcome:
+            style: Style | None = None, inputs: Inputs | None = None, guard: Any = None) -> Outcome:
     """Сводка, заметки и задачи по расшифровке. Никогда не бросает: сбой — `status: failed`.
 
     `style` — шаблон типа встречи и раскладка разделов (M16, M17, W8), `inputs` — свои записи
@@ -1026,7 +1050,7 @@ def analyse(transcript: Transcript, backend: Any, mode: str = "detailed", *,
     turns = transcript.turns
     outcome = Outcome(mode, "failed", lang, template=style.template_id, template_name=style.title(lang),
                       layout=style.layout, inputs=inputs.summary() if inputs else {})
-    caller = Caller(backend, lang, timeout)
+    caller = Caller(backend, lang, timeout, guard=guard)
     labels = speaker_labels(turns, transcript.participants)
     valid = {turn["id"] for turn in turns}
     marks = [{**mark, "index": index, "key": f"m{index + 1}"} for index, mark in enumerate(transcript.marks)]
@@ -1514,7 +1538,7 @@ def run_meeting_ai(payload: dict[str, Any], backends: dict[str, Any], emit: Emit
     model = getattr(backend, "model", None)
     if isinstance(backend, polish_mod.ClaudeCliBackend):
         model = payload.get("model") or MEETING_MODEL
-        backend = polish_mod.ClaudeCliBackend(backend.executable, model)
+        backend = backend.with_model(model)
     timeout = float(payload.get("timeout_s") or CALL_TIMEOUT_S)
 
     variant = str(payload.get("variant") or "").strip().lower() or None
@@ -1536,7 +1560,8 @@ def run_meeting_ai(payload: dict[str, Any], backends: dict[str, Any], emit: Emit
 
     outcome = analyse(transcript, backend, mode, emit=emit, timeout=max(5.0, min(timeout, 600.0)),
                       progress={"folder": str(folder), "mode": mode, **({"variant": variant} if variant else {})},
-                      style=style, inputs=inputs or None)
+                      style=style, inputs=inputs or None,
+                      guard=lambda: privacy.check_meeting(folder, backend_name))
     outcome.inputs = {**(inputs.summary() if inputs else {}), "used": use_notes}
     title, title_source = None, None
     if not variant and outcome.status != "failed":

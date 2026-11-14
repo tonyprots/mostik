@@ -54,8 +54,23 @@ public final class HotkeyMonitor {
             MainActor.assumeIsolated { self?.keyDown(event) }
             return event
         }) { monitors.append(localKeys) }
+        // ⌘+клик по вкладке: клик во время удержания отменяет начатую им запись. Только глобальный
+        // монитор — клики по своей плашке (меню языка) запись не трогают.
+        if let mouse = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+                                                         handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.mouseDown() }
+        }) { monitors.append(mouse) }
         installCarbonHandler()
         registerToggle()
+    }
+
+    /// Контроллер не начал запись по удержанию: отпускание и клики этого удержания ничего не значат.
+    public func holdIgnored() { gesture.ignoreCurrentHold() }
+
+    private func mouseDown() {
+        let actions = gesture.handle(.mouseDown)
+        if !actions.isEmpty { AppLog.shared.event("keys", "click during hold actions=\(actions)") }
+        run(actions)
     }
 
     public func stop() {

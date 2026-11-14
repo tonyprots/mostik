@@ -21,7 +21,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Mostik"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # Google Календарь (docs/calendars.md): OAuth-клиент «Desktop app» — из окружения сборки, в репозитории его нет.
-# Без MOSTIK_GOOGLE_CLIENT_ID строка Google в Настройках пишет «Недоступно в этой сборке».
+# Без MOSTIK_GOOGLE_CLIENT_ID строка Google в Настройках ведёт в «Учётные записи интернета» macOS.
+# Локальная сборка берёт значения из scripts/local.env (в .gitignore), CI — из секретов.
+if [ -z "${MOSTIK_GOOGLE_CLIENT_ID:-}" ] && [ -f "$ROOT/scripts/local.env" ]; then
+  set -a; . "$ROOT/scripts/local.env"; set +a
+fi
 if [ -n "${MOSTIK_GOOGLE_CLIENT_ID:-}" ]; then
   /usr/libexec/PlistBuddy -c "Add :MostikGoogleClientID string $MOSTIK_GOOGLE_CLIENT_ID" "$APP/Contents/Info.plist"
   if [ -n "${MOSTIK_GOOGLE_CLIENT_SECRET:-}" ]; then

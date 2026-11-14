@@ -19,7 +19,7 @@ public final class ProjectDetector: @unchecked Sendable {
 
     /// С любого потока: на нажатии зовётся после старта записи, вне главного (шаг 1, п. 1).
     public func detect(pid: pid_t, bundlePath: String?, windowTitle: String, agentNames: Set<String>) -> String? {
-        let processes = Self.snapshot()
+        let processes = Self.snapshot(agentNames: agentNames)
         let agents = ProjectResolver.agentProcesses(appPID: pid, appBundlePath: bundlePath,
                                                     in: processes, names: agentNames)
         guard !agents.isEmpty else { return nil }
@@ -52,8 +52,9 @@ public final class ProjectDetector: @unchecked Sendable {
         return path.isEmpty ? nil : path
     }
 
-    /// Все процессы: pid, ppid, имя, путь, время запуска; argv — только у node/bun/deno.
-    static func snapshot() -> [ProcessEntry] {
+    /// Все процессы: pid, ppid, имя, путь, время запуска; argv — у node/bun/deno и у программ вне
+    /// системных папок, чьё имя агента не выдало (`ProjectResolver.wantsArgs`).
+    static func snapshot(agentNames: Set<String> = []) -> [ProcessEntry] {
         let count = proc_listallpids(nil, 0)
         guard count > 0 else { return [] }
         var pids = [pid_t](repeating: 0, count: Int(count) + 64)
@@ -73,7 +74,7 @@ public final class ProjectDetector: @unchecked Sendable {
             if proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count)) > 0 { path = String(cString: pathBuf) }
             var entry = ProcessEntry(pid: pid, ppid: Int32(bsd.pbi_ppid), name: name, path: path,
                                      startTime: Double(bsd.pbi_start_tvsec) + Double(bsd.pbi_start_tvusec) / 1e6)
-            if ProjectResolver.isInterpreter(entry) { entry.args = args(pid: pid) }
+            if ProjectResolver.wantsArgs(entry, names: agentNames) { entry.args = args(pid: pid) }
             result.append(entry)
         }
         return result

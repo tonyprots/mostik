@@ -34,9 +34,14 @@ public struct MeetingPromptView: View {
     }
 
     @ViewBuilder private func reminderRecordButtons(_ meeting: UpcomingMeeting) -> some View {
-        recordButton(meeting.link == nil ? .primary : .secondary)
+        // Конспект ведёт сам Телемост — запись не предлагаем, остаются «Подключиться» и «Скрыть».
+        if !telemostCovers(meeting) { recordButton(meeting.link == nil ? .primary : .secondary) }
         Button(L("Скрыть", "Dismiss")) { extras.onDismissPrompt() }
             .buttonStyle(.mostik(.quiet, compact: true))
+    }
+
+    private func telemostCovers(_ meeting: UpcomingMeeting) -> Bool {
+        extras.telemostSummaryHabit && TelemostSummary.isTelemostLink(meeting.link)
     }
 
     /// «Записать ▾»: по стрелке — запись сразу «Только на этом Mac» (без Claude, агентов и скриптов).
@@ -68,7 +73,8 @@ public struct MeetingPromptView: View {
             case let .reminder(meeting):
                 header(symbol: "calendar", tint: Palette.accent,
                        title: L("Через минуту: \(meeting.title)", "In a minute: \(meeting.title)"))
-                detail(Self.timeRange(meeting) + (meeting.agenda.isEmpty ? "" : " · " + Fmt.agendaItems(meeting.agenda.count)))
+                detail(Self.timeRange(meeting) + (meeting.agenda.isEmpty ? "" : " · " + Fmt.agendaItems(meeting.agenda.count))
+                       + (telemostCovers(meeting) ? " · " + L("конспект ведёт Телемост", "Telemost takes the notes") : ""))
                 // Не влезает в 340 pt — «Подключиться» уходит в свою строку.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: DS.Space.xs) {

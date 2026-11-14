@@ -13,7 +13,7 @@ public enum FocusedField {
     private static var manualAccessibilityPIDs: Set<pid_t> = []
 
     /// Снимок поля в фокусе; nil — нет доступа или ничего не в фокусе.
-    public static func snapshot() -> FieldSnapshot? {
+    public static func snapshot(readValue: Bool = true) -> FieldSnapshot? {
         guard AXIsProcessTrusted() else { return nil }
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.25)
@@ -38,8 +38,8 @@ public enum FocusedField {
         if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success {
             snapshot.valueSettable = settable.boolValue
         }
-        // Пароль не читаем вовсе.
-        guard !snapshot.isSecure else { return snapshot }
+        // Пароль не читаем вовсе; для проверки «есть ли поле» значение не нужно.
+        guard readValue, !snapshot.isSecure else { return snapshot }
         var count: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &count) == .success,
            let n = count as? Int, n > valueLimit {

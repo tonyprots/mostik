@@ -75,6 +75,20 @@ def safe_traceback(error: BaseException | None = None) -> str:
     return "\n\n-- затем / then --\n\n".join(parts)
 
 
+def answered(engine, command_id, job):
+    """Обёртка фоновой задачи команды: сбой не оставляет приложение без ответа — уходит `error internal`."""
+    def run() -> None:
+        try:
+            job()
+        except Exception as error:  # noqa: BLE001
+            try:
+                print("сбой фоновой задачи:\n" + safe_traceback(), file=sys.stderr, flush=True)
+                engine.error("internal", f"{type(error).__name__}: {redact(str(error))}", command_id=command_id)
+            except Exception:  # noqa: BLE001 — сообщить не вышло: поток всё равно не роняем
+                pass
+    return run
+
+
 def file_name(kind: str, when: float, pid: int) -> str:
     return f"{kind}-{time.strftime('%Y-%m-%d-%H%M%S', time.localtime(when))}-pid{pid}.txt"
 

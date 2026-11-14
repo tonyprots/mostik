@@ -4,7 +4,7 @@
 
 Пожалуйста, не публикуйте уязвимость в открытых задачах. Напишите сопровождающим закрыто:
 
-- **Адрес для сообщений:** появится до первого публичного выпуска. Пока его нет, откройте задачу в репозитории с заголовком «Security: прошу закрытый канал» без подробностей — с вами свяжутся.
+- **Куда писать:** во вкладке Security репозитория — «Report a vulnerability» (закрытое сообщение сопровождающим). Если этой кнопки нет, откройте задачу с заголовком «Security: прошу закрытый канал» без подробностей — с вами свяжутся.
 
 Что приложить: версию Mostik и macOS, шаги воспроизведения, что именно можно получить или сломать. Мы подтвердим получение в течение 7 дней и договоримся о сроке исправления до раскрытия.
 
@@ -27,7 +27,7 @@
 
 Please do not file vulnerabilities as public issues. Contact the maintainers privately:
 
-- **Security contact:** will be published before the first public release. Until then, open an issue titled "Security: requesting a private channel" with no details, and a maintainer will reach out.
+- **Where to write:** the repository’s Security tab → “Report a vulnerability” (a private message to the maintainers). If that button is missing, open an issue titled "Security: requesting a private channel" with no details, and a maintainer will reach out.
 
 Include the Mostik and macOS versions, steps to reproduce, and the impact. We acknowledge reports within 7 days and agree on a fix timeline before disclosure.
 

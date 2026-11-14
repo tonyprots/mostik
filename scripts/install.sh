@@ -23,6 +23,10 @@ INSTALL_DIR="${MOSTIK_INSTALL_DIR:-/Applications}"
 say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Everything below runs inside main(), called on the last line: if the download breaks off
+# halfway (curl | bash), bash sees an unfinished function and runs nothing, instead of stopping
+# between removing the old app and moving the new one in.
+main() {
 # --- The Mac -----------------------------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || fail "Mostik runs on macOS only."
 [ "$(uname -m)" = "arm64" ] || fail "Mostik needs a Mac with Apple silicon (M1 or newer)."
@@ -126,3 +130,6 @@ say "Mostik ${VERSION} is installed. It updates itself from now on."
 if [ "${MOSTIK_NO_LAUNCH:-}" != "1" ]; then
   open "$DEST"
 fi
+}
+
+main "$@"
