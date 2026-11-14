@@ -565,11 +565,12 @@ def test_15_stop_waits_for_loading_whisper(monkeypatch):
     import threading
 
     state = {"status": ("loading", None)}
-    session, pool, _, changed = _bilingual(monkeypatch, status=lambda: state["status"])
+    # Срок ответа с запасом: на загруженной машине 20 мс потока растягиваются, и узкий срок давал ложный отказ.
+    session, pool, _, changed = _bilingual(monkeypatch, status=lambda: state["status"], timeout=0.5)
     session.append(pcm16(np.concatenate([tone(1.5), silence(0.4)])))
 
     def load_then_answer():
-        time.sleep(0.4)  # в восемь раз дольше срока ответа
+        time.sleep(1.2)  # заметно дольше срока ответа: без отсчёта от готовности был бы отказ
         state["status"] = ("ready", time.monotonic())
         time.sleep(0.02)
         session.on_verifier({"window_id": "s:detect", "probs": {"ru": 0.02, "en": 0.97}})
