@@ -217,7 +217,8 @@ final class VoiceEditController {
     }
 
     private func fail(_ failure: VoiceEditFailure, detail: String = "") {
-        if !detail.isEmpty { NSLog("Mostik voice edit \(failure.rawValue): \(detail)") }
+        // Не NSLog: системный журнал уезжает в sysdiagnose, а в `detail` бывает хвост вывода CLI.
+        if !detail.isEmpty { AppLog.shared.error("voice-edit", "\(failure.rawValue): \(LogLine.diagnostic(detail))") }
         model.voiceEdit.detail = detail
         model.voiceEdit.phase = .failed(failure)
         model.hud = .error(VoiceEditModel.message(failure))

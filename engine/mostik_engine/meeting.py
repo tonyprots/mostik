@@ -27,6 +27,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import crash_report
 from . import isolation
 from . import meeting_folder as folder_contract
 from . import privacy
@@ -956,7 +957,9 @@ def run_track(
     code = process.wait()
     track_log(track, f"код {code}, {time.monotonic() - started:.0f} с")
     if code != 0:
-        detail = f"transcriber ({track}) завершился с кодом {code}: " + " | ".join(tail[-5:])
+        # Хвост stderr уходит в сообщение ошибки, а оно — в журналы и в манифест: в хвосте бывают слова
+        # из записи, поэтому оставляем только признаки сбоя.
+        detail = f"transcriber ({track}) завершился с кодом {code}: " + crash_report.diagnostic(" | ".join(tail[-5:]))
         if diarize and memory_failure(code, tail):
             raise MeetingTrackError("diarization_memory", "Не хватило памяти для модели голосов. " + detail)
         raise RuntimeError(detail)

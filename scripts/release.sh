@@ -196,6 +196,9 @@ fi
 step "Запрещённые строки: файлы и история"
 bash "$ROOT/scripts/check-denylist.sh" --tracked || die "запрещённые строки в файлах репозитория"
 bash "$ROOT/scripts/check-denylist.sh" --history || die "запрещённые строки в истории git"
+# Личные данные: ни фраза из встречи или диктовки, ни имя, ни термин словаря не уезжают в выпуск.
+# Без данных на этой машине сверять не с чем — выпуск не собирается (код 2), а не проходит молча.
+python3 -I "$ROOT/scripts/check-private-data.py" "tracked:$ROOT" || die "личные данные в файлах репозитория (scripts/check-private-data.py)"
 
 # --- 1. Сборка в свою папку: dist/ и запущенный Mostik не трогаем.
 step "Сборка"
@@ -296,11 +299,12 @@ MNT="$(mktemp -d /tmp/mostik-dmg.XXXXXX)"
 hdiutil attach -quiet -readonly -noverify -noautoopen -nobrowse -mountpoint "$MNT" "$DMG"
 trap 'hdiutil detach -quiet "$MNT" 2>/dev/null || true' EXIT
 leak_rc=0
+python3 -I "$ROOT/scripts/check-private-data.py" "$MNT" || leak_rc=$?
 bash "$ROOT/scripts/check-leaks.sh" --tree "$MNT" "$(cd ~ && pwd -P)" "$HOME" "$(id -un)" || leak_rc=$?
 hdiutil detach -quiet "$MNT"
 trap - EXIT
 rmdir "$MNT" 2>/dev/null || true
-[ "$leak_rc" -eq 0 ] || die "в образе $DMG есть пути или логин сборщика (код $leak_rc)"
+[ "$leak_rc" -eq 0 ] || die "в образе $DMG есть личные данные, пути или логин сборщика (код $leak_rc)"
 if [ "$MODE" = developer-id ]; then
   codesign --force --sign "$IDENTITY" --timestamp "$DMG"
   step "Нотаризация .dmg"

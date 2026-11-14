@@ -1374,8 +1374,10 @@ def main() -> int:
         log(f"движок {__version__} готов, pid {os.getpid()}")
         return engine.run(sys.stdin)
     except Exception as error:
-        # Локальный отчёт о сбое (П8, пункт 6), затем обычное падение с traceback в engine.log.
+        # Локальный отчёт о сбое (П8, пункт 6). Стек в engine.log — через `safe_traceback`: обычный
+        # traceback печатает сообщение исключения целиком, а в нём бывает текст диктовки или встречи.
         path = crash_report.write(error, __version__)
         if path is not None:
             log(f"отчёт о сбое: {path.name}")
-        raise
+        log("движок упал:\n" + crash_report.safe_traceback(error))
+        return 1

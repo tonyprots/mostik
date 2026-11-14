@@ -495,7 +495,7 @@ final class AppController {
         case .stopped:
             break
         case .failed(let message):
-            AppLog.shared.event("engine", "failed: \(message)")
+            AppLog.shared.event("engine", "failed: \(LogLine.diagnostic(message))")
             model.engineStatus = .failed(message)
             failMeetings(message)
             upkeep.engineFailed()
@@ -661,7 +661,8 @@ final class AppController {
                     $0.failureCode = code
                 }
             } else {
-                NSLog("Mostik engine error \(code): \(message)")
+                // Не NSLog: системный журнал уезжает в sysdiagnose, а сообщение движка приходит сырым.
+                AppLog.shared.error("engine", "error \(code): \(LogLine.diagnostic(message))")
             }
         case .polished(let sid, let text, let polished, let status):
             latePolished(sid, text: text, polished: polished, status: status)
@@ -1430,7 +1431,7 @@ final class AppController {
     }
 
     private func recordFailure(id: String, file: RecordingFile, message: String) {
-        AppLog.shared.error("dictation", "transcription failed after \(String(format: "%.1f", file.seconds)) s audio: \(message)")
+        AppLog.shared.error("dictation", "transcription failed after \(String(format: "%.1f", file.seconds)) s audio: \(LogLine.diagnostic(message))")
         let entry = HistoryEntry(id: id, text: "", language: model.settings.language, audioSeconds: file.seconds,
                                  audioPath: file.url.path, outcome: "failed", verifier: "off")
         model.history.insert(history.record(entry), at: 0)  // Р5-1л: в памяти — то, что в файле
@@ -1760,7 +1761,7 @@ final class AppController {
             defer { if generation == self.sourcesGeneration { self.model.sourcesScanning = false } }
             let reply: SourcesReply
             do { reply = try await engine.sources(project: project, sources: extra, rescan: rescan) } catch {
-                NSLog("Mostik sources: \(error.localizedDescription)")
+                NSLog("Mostik sources: \(LogLine.diagnostic(error.localizedDescription))")
                 return
             }
             guard generation == self.sourcesGeneration else { return }
@@ -1831,7 +1832,7 @@ final class AppController {
     private func sendHiddenTerms() async {
         let terms = model.settings.hiddenTerms
         do { _ = try await engine.request("hidden_terms", fields: ["terms": .array(terms.map { .string($0) })]) } catch {
-            NSLog("Mostik hidden terms: \(error.localizedDescription)")
+            NSLog("Mostik hidden terms: \(LogLine.diagnostic(error.localizedDescription))")
         }
     }
 
@@ -1843,7 +1844,7 @@ final class AppController {
         guard calendar.isReady else { return }
         let events = calendar.meetings()
         do { try await engine.calendar(events) } catch {
-            NSLog("Mostik calendar: \(error.localizedDescription)")
+            NSLog("Mostik calendar: \(LogLine.diagnostic(error.localizedDescription))")
         }
     }
 

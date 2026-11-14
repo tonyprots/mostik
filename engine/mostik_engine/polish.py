@@ -1384,7 +1384,7 @@ def polish(backend: PolishBackend | None, request: PolishRequest,
     def outcome(text: str, done: bool, status: str, detail: str = "") -> PolishOutcome:
         ms = round((time.monotonic() - started) * 1000, 1)
         if not done:
-            _log(f"полировка ({backend.name}): {status} {crash_report.redact(detail)}".rstrip())
+            _log(f"полировка ({backend.name}): {status} {crash_report.diagnostic(detail)}".rstrip())
         return PolishOutcome(text, done, status, ms, detail)
 
     # Малая локальная модель путает самоисправления — однозначные снимаем до неё (`resolve_corrections`).

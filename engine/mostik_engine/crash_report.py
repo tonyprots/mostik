@@ -42,6 +42,32 @@ def redact(message: str, limit: int = 300) -> str:
     return flat if len(flat) <= limit else flat[:limit] + "…"
 
 
+_SIGNS = re.compile(
+    r"\b[A-Z][A-Za-z]*(?:Error|Exception|Interrupt)\b|\bE[A-Z]{3,}\b|\bSIG[A-Z]+\b|\b[45]\d\d\b"
+    r"|unauthori[sz]ed|authenticat\w*|logged out|log ?in|forbidden|rate.?limit\w*|quota|overloaded|usage limit"
+    r"|timed? ?out|network|connection \w+|dns|proxy|not found|no such file|permission denied|killed"
+    r"|out of memory|credit\w*|billing|api key|invalid \w+|Error Domain=\S+ Code=-?\d+"
+    r"|fluidaudio|coreml|gigaam|whisper|parakeet|offline mode", re.IGNORECASE)
+
+
+def diagnostic(output: str, limit: int = 160) -> str:
+    """Вывод внешней программы (claude, codex, transcriber) для журнала: только признаки сбоя.
+
+    В хвосте вывода бывает сам запрос — кусок диктовки или расшифровки, и не обязательно в кавычках,
+    поэтому `redact` здесь мало. Оставляем известные слова диагностики, остальное считаем по длине.
+    """
+    flat = " ".join((output or "").split())
+    if not flat:
+        return ""
+    signs: list[str] = []
+    for match in _SIGNS.finditer(flat):
+        sign = match.group(0).lower() if not match.group(0)[:1].isupper() else match.group(0)
+        if sign not in signs:
+            signs.append(sign)
+    head = ", ".join(signs)[:limit]
+    return f"{head} (вывод {len(flat)} зн. скрыт)" if head else f"(вывод {len(flat)} зн. скрыт)"
+
+
 def describe(error: BaseException) -> str:
     """`Тип: сообщение` для engine.log — сообщение через `redact` (П10 С6)."""
     return f"{type(error).__name__}: {redact(str(error))}"

@@ -147,7 +147,7 @@ final class SpeakersController {
                     do {
                         try await self.engine().voicesWipe()
                     } catch {
-                        NSLog("Mostik voices_wipe: \(error.localizedDescription)")
+                        NSLog("Mostik voices_wipe: \(LogLine.diagnostic(error.localizedDescription))")
                     }
                 }
                 await self.refreshStatus()

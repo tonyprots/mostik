@@ -261,7 +261,7 @@ def answer(question: str, *, retriever: ix.Retriever, backend: Any = None, conse
                                   user_message(question, hits, language=language), timeout)
     except polish_mod.PolishError as error:
         timings["llm_ms"] = round((time.monotonic() - llm_started) * 1000, 1)
-        _log(f"спросить: {error.status} {crash_report.redact(str(error))}")
+        _log(f"спросить: {error.status} {crash_report.diagnostic(str(error))}")
         return finish(error.status, detail=str(error))
     except Exception as error:  # noqa: BLE001 — сбой модели не теряет найденное
         timings["llm_ms"] = round((time.monotonic() - llm_started) * 1000, 1)

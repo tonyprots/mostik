@@ -178,6 +178,7 @@ read -r answer < /dev/tty
 [ "$answer" = "$VERSION" ] || die "не подтверждено — ничего не опубликовано"
 
 step "1. GitHub Release"
+python3 -I "$ROOT/scripts/check-private-data.py" "$NOTES" "$DMG" || { echo "publish-release: личные данные в тексте Release или в образе" >&2; exit 1; }
 gh release create "$TAG" "$DMG" --repo "$REPO" --title "Mostik $VERSION" --notes-file "$NOTES"
 
 step "2. .dmg по адресу"

@@ -122,3 +122,14 @@ def test_ask_logs_status_and_length_not_the_answer(capsys) -> None:
                     FakeBackend(error=ValueError(f"не разобрал '{secret}'"))):
         ask.answer("Какая премия?", retriever=Fixed(), backend=backend, consent=True)
         assert secret not in capsys.readouterr().err
+
+
+def test_diagnostic_keeps_signs_and_hides_the_rest():
+    # Хвост вывода CLI: признаки сбоя остаются, сам запрос (без кавычек) в журнал не попадает.
+    tail = "Error: 401 Unauthorized. Request was: перенесём запуск пилота на вторую неделю марта"
+    line = crash_report.diagnostic(tail)
+    assert "401" in line and "unauthorized" in line.lower()
+    assert "пилота" not in line and "марта" not in line
+    assert crash_report.diagnostic("Договорились встретиться в четверг") == "(вывод 34 зн. скрыт)"
+    assert crash_report.diagnostic("") == ""
+    assert "MemoryError" in crash_report.diagnostic("Traceback … MemoryError: не хватило памяти на «секрет»")

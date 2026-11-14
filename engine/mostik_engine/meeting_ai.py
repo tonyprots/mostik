@@ -1702,8 +1702,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=MEETING_MODEL)
     parser.add_argument("--single-chars", type=int, default=SINGLE_CHARS)
     parser.add_argument("--chunk-chars", type=int, default=CHUNK_CHARS)
+    parser.add_argument("--cloud", action="store_true",
+                        help="подтверждаю: расшифровка уйдёт в Claude (без флага прогон не запускается)")
     args = parser.parse_args(argv)
     folder = Path(args.folder)
+    if not args.cloud:
+        parser.error("расшифровка уйдёт в облако Claude — подтвердите флагом --cloud")
+    privacy.check_meeting(folder, "claude")  # встреча «только на этом Mac» в облако не идёт и отсюда
     transcript = load_transcript(folder, args.language)
     backend = polish_mod.ClaudeCliBackend(model=args.model)
     outcome = analyse(transcript, backend, args.mode, single_chars=args.single_chars, chunk_chars=args.chunk_chars,

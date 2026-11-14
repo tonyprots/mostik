@@ -114,6 +114,26 @@ public enum LogLine {
         text.replacingOccurrences(of: #"'[^'\n]*'|"[^"\n]*"|«[^»\n]*»"#, with: "«…»", options: .regularExpression)
     }
 
+    /// Сообщение ошибки движка или внешней программы для журнала: тип ошибки и признаки сбоя, без
+    /// остального текста. `redact` закрывает только кавычки, а в таких сообщениях бывает хвост вывода
+    /// `claude`, `codex` или transcriber — кусок диктовки или расшифровки без всяких кавычек.
+    public static func diagnostic(_ message: String) -> String {
+        let flat = message.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !flat.isEmpty else { return "" }
+        let pattern = #"\b[A-Z][A-Za-z]*(?:Error|Exception|Interrupt|Unavailable|Meeting)\b|\bE[A-Z]{3,}\b|\bSIG[A-Z]+\b|\b[45]\d\d\b|(?i:unauthori[sz]ed|authenticat\w*|logged out|log ?in|forbidden|rate.?limit\w*|quota|overloaded|usage limit|timed? ?out|network|dns|proxy|not found|no such file|permission denied|killed|out of memory|billing|api key|код \d+|code \d+)"#
+        var signs: [String] = []
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(flat.startIndex..., in: flat)
+            for match in regex.matches(in: flat, range: range) {
+                guard let found = Range(match.range, in: flat) else { continue }
+                let sign = String(flat[found])
+                if !signs.contains(sign) { signs.append(sign) }
+            }
+        }
+        let head = String(signs.joined(separator: ", ").prefix(160))
+        return head.isEmpty ? "(текст \(flat.count) зн. скрыт)" : "\(head) (текст \(flat.count) зн. скрыт)"
+    }
+
     public static func clean(_ text: String, limit: Int) -> String {
         let flat = text.replacingOccurrences(of: "\r\n", with: " ")
             .components(separatedBy: .newlines).joined(separator: " ")
@@ -172,7 +192,7 @@ public enum CrashReportPolicy {
                      "", "version: \(version)", "system: \(system)",
                      "date: \(LogLine.format(date, category: "crash", message: "").split(separator: " ").first ?? "")",
                      "kind: uncaught exception", "exception: \(name)",
-                     "reason: \(LogLine.clean(reason, limit: 300))", "", "stack:"]
+                     "reason: \(LogLine.clean(LogLine.redact(reason), limit: 300))", "", "stack:"]
         lines += stack.map { "  " + $0 }
         return lines.joined(separator: "\n") + "\n"
     }

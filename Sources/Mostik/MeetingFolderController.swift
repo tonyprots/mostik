@@ -132,7 +132,7 @@ final class MeetingFolderController {
             let reply = try await engine().meetingsMigrate(root: paths.meetings)
             if (reply["migrated"]?.doubleValue ?? 0) > 0 { reloadMeetings() }
         } catch {
-            NSLog("Mostik meetings_migrate: \(error.localizedDescription)")
+            NSLog("Mostik meetings_migrate: \(LogLine.diagnostic(error.localizedDescription))")
         }
         if !recovered {
             recovered = true
@@ -271,7 +271,7 @@ final class MeetingFolderController {
                     try recorder.restart(track, offset: clock.elapsed)
                     NSLog("Mostik meeting: \(track.rawValue) restarted (\(attempt))")
                 } catch {
-                    NSLog("Mostik meeting: \(track.rawValue) restart failed: \(error.localizedDescription)")
+                    NSLog("Mostik meeting: \(track.rawValue) restart failed: \(LogLine.diagnostic(error.localizedDescription))")
                 }
                 watchdog.restarted(track, at: now)
                 var recording = watchdog.manifestRestarts
@@ -575,7 +575,7 @@ final class MeetingFolderController {
                 try FileManager.default.trashItem(at: folder.appendingPathComponent(name), resultingItemURL: nil)
                 trashed.append(name)
             } catch {
-                NSLog("Mostik trash \(name): \(error.localizedDescription)")
+                NSLog("Mostik trash \(name): \(LogLine.diagnostic(error.localizedDescription))")
             }
         }
         guard !trashed.isEmpty else { return }

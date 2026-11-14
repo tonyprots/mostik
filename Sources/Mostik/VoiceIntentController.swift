@@ -72,7 +72,7 @@ final class VoiceIntentController {
             reply = try await engine().voiceIntent(text: text, language: language,
                                                    backend: settings.polish.effectiveBackend)
         } catch {
-            NSLog("Mostik: команда не разобрана — \(error.localizedDescription)")
+            NSLog("Mostik: команда не разобрана — \(LogLine.diagnostic(error.localizedDescription))")
             return false
         }
         switch VoiceIntentPlan.decide(reply, threshold: settings.voiceIntents.threshold) {

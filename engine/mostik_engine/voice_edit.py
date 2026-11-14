@@ -206,7 +206,7 @@ def edit(backend: Any, command: str, selection: str, language: str = "ru",
     def outcome(status: str, text: str = "", understood: str = "", detail: str = "") -> EditOutcome:
         ms = round((time.monotonic() - started) * 1000, 1)
         if status != "done":
-            log(f"правка ({getattr(backend, 'name', '?')}): {status} {crash_report.redact(detail)}".rstrip())
+            log(f"правка ({getattr(backend, 'name', '?')}): {status} {crash_report.diagnostic(detail)}".rstrip())
         return EditOutcome(status, text, understood or heard, ms, detail)
 
     if not heard or not any(ch.isalnum() for ch in heard):

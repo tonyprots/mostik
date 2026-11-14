@@ -177,6 +177,12 @@ func runLogRedactionTests() {
     check(line.contains("ValueError") && line.contains("«…»"), "тип ошибки и пометка остаются: \(line)")
     equal(LogLine.redact("engine failed (code 1)"), "engine failed (code 1)", "обычное событие не меняется")
     equal(LogLine.redact("a 'b' \"c\" «d» e"), "a «…» «…» «…» e")
+    // Хвост вывода CLI без кавычек: в журнале остаются признаки сбоя, текст запроса — нет.
+    let tail = LogLine.diagnostic("RuntimeError: 401 Unauthorized, запрос: перенесём запуск пилота на март")
+    check(tail.contains("RuntimeError") && tail.contains("401"), "признаки сбоя остаются: \(tail)")
+    check(!tail.contains("пилота") && !tail.contains("март"), "текст запроса скрыт: \(tail)")
+    equal(LogLine.diagnostic("Договорились встретиться в четверг"), "(текст 34 зн. скрыт)")
+    equal(LogLine.diagnostic(""), "")
 }
 
 /// П10, низкий: рабочие папки transcriber (`transcriber-asr-*`, `transcriber-download-*`) со звуком встреч
