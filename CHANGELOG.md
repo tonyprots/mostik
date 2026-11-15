@@ -3,6 +3,15 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 English summary follows each release.
 
+## 0.1.4 — 2026-11-15
+
+### Приватность
+- В журналы и отчёты о сбоях больше не попадает вывод внешних программ. Если `claude`, `codex` или расшифровка встречи завершались ошибкой, в журнал писался хвост их вывода, а в нём мог оказаться текст диктовки или встречи. Теперь остаются тип ошибки и признаки сбоя.
+- Сообщения об ошибках движка не пишутся в системный журнал macOS.
+- Примеры в коде движка заменены выдуманными.
+
+English: logs and crash reports no longer include the output of external tools (`claude`, `codex`, the meeting transcriber), which could contain dictated or meeting text when a run failed; only the error type and failure signs are kept. Engine error messages no longer go to the macOS system log. Examples in the engine code are now synthetic.
+
 ## 0.1.3 — 2026-11-15
 
 ### Диктовка
