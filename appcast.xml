@@ -10,43 +10,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>ru</language>
         <!-- items -->
         <item>
-            <title>Mostik 0.1.3</title>
-            <pubDate>Sat, 14 Nov 2026 22:27:53 GMT</pubDate>
-            <sparkle:version>416</sparkle:version>
-            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <title>Mostik 0.1.4</title>
+            <pubDate>Sun, 15 Nov 2026 00:21:00 GMT</pubDate>
+            <sparkle:version>421</sparkle:version>
+            <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
-            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.3/Mostik-0.1.3.dmg" length="196007599" type="application/octet-stream" sparkle:edSignature="A427mYRhGAZKrCdFtlpLbGETPOMwxM8FDqYnxC6GLZ1BugTIXCFqmf0U/lkr9F8Rx8sA5leVRyJv12fj+t3+CA==" />
-        </item>
-        <item>
-            <title>Mostik 0.1.2</title>
-            <pubDate>Tue, 20 Oct 2026 07:47:09 GMT</pubDate>
-            <sparkle:version>368</sparkle:version>
-            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
-            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.2/Mostik-0.1.2.dmg" length="195794530" type="application/octet-stream" sparkle:edSignature="Z9y9ZdFXPA3vnlSJCx0bsDoYZkP+yKRvxLtDr5ZfyaLrFrGl/QRwyOUCLOgfKmOV06nf/drU/UvGvMl2rWW8CA==" />
-        </item>
-        <item>
-            <title>Mostik 0.1.1</title>
-            <pubDate>Sat, 17 Oct 2026 21:17:32 GMT</pubDate>
-            <sparkle:version>364</sparkle:version>
-            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
-            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.1/Mostik-0.1.1.dmg" length="195781882" type="application/octet-stream" sparkle:edSignature="UQr1n2upB6vUJpXnZKYghLjKUP+uzUPyztEifIgWwx6EF+75CX+Aaj+BwH3jl33KACfo6iZSK712OpoO2/GgAA==" />
-        </item>
-        <item>
-            <title>Mostik 0.1.0</title>
-            <pubDate>Sat, 17 Oct 2026 17:59:36 GMT</pubDate>
-            <sparkle:version>357</sparkle:version>
-            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
-            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.0/Mostik-0.1.0.dmg" length="195734559" type="application/octet-stream" sparkle:edSignature="oaiwcL//+E8dt77VWAElpk4Uqh4VtrDCpybhmARfsGm+veWkFx4DkBIO8tLOpjBC43chppg0Z+S50lbfkUnJDA==" />
+            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.4/Mostik-0.1.4.dmg" length="196012993" type="application/octet-stream" sparkle:edSignature="c8SHm8OA68Hsr+TM5l1Lh/NTHAIq5qZTt3tTJn9I1U0QfhurWzLdbJLJ0NzyRv788q4pk03iTSCIAsbPaRTgBA=="></enclosure>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: 0u9O0tmMz354DgbSVKKlJL1wEMxYkLe6WyVImRm7x2zjERr+m/I8b/qEWXHbhi2uun7F+Vl/43iuJmC/7Bs0Aw==
-length: 4330
+edSignature: SZ8KJVF0JzvRliDIumMAgfktBNGblJgAZIZJVUwqml4Noxgn1uI1zEySy3VIFNzkJB3+MfH0sXNCv5kO/OgaCw==
+length: 1961
 -->
