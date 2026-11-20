@@ -133,3 +133,27 @@ def test_diagnostic_keeps_signs_and_hides_the_rest():
     assert crash_report.diagnostic("Договорились встретиться в четверг") == "(вывод 34 зн. скрыт)"
     assert crash_report.diagnostic("") == ""
     assert "MemoryError" in crash_report.diagnostic("Traceback … MemoryError: не хватило памяти на «секрет»")
+
+
+def test_log_into_closed_stderr_is_not_a_crash() -> None:
+    # На выходе приложение закрывает канал раньше, чем движок гасит процессы моделей: прощальная
+    # строка `VerifierClient.stop()` роняла движок с BrokenPipeError. Канал закрываем сами.
+    script = (
+        "import os, sys\n"
+        "from mostik_engine import crash_report, llm_mlx, verifier_worker\n"
+        "read, write = os.pipe()\n"
+        "os.dup2(write, sys.stderr.fileno()); os.close(write); os.close(read)\n"
+        "try:\n"
+        "    print('x', file=sys.stderr, flush=True)\n"
+        "except BrokenPipeError:\n"
+        "    print('pipe closed')\n"
+        "verifier_worker._log('процесс whisper остановлен')\n"
+        "llm_mlx._log('процесс остановлен')\n"
+        "crash_report.stderr_line('ещё строка')\n"
+        "print('ok')\n"
+    )
+    env = dict(os.environ, PYTHONPATH=str(ENGINE_DIR))
+    proc = subprocess.run([sys.executable, "-c", script], env=env, input="", capture_output=True,
+                          text=True, timeout=60, cwd=ENGINE_DIR)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["pipe", "closed", "ok"]  # канал и правда был закрыт

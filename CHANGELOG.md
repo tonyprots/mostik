@@ -3,6 +3,29 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 English summary follows each release.
 
+## 0.1.5 — 2026-11-20
+
+### Диктовка
+- Первая диктовка после простоя больше не уводит Mac в своп: модели грузятся по очереди — сначала основная, затем Whisper, затем локальная модель причёсывания. Раньше все три грузились разом.
+- Длинная диктовка не копит отставание на минуты: если основная модель отстала от речи больше чем на 20 секунд, проверка Whisper для этой записи отключается.
+- После отпускания клавиши плашка показывает «Распознаю» с полосой: видно, сколько звука осталось распознать.
+- Нажатие во время расшифровки или вставки больше не пропадает молча: плашка пишет «Новая запись — после вставки этой».
+- Выход из приложения больше не роняет движок с отчётом о сбое.
+- Плашка читается на любой подложке, в том числе в тёмной теме над белой страницей. Кнопки у слов под вопросом сжимаются до значков.
+
+### Mac с 8 ГБ памяти
+- Локальная модель причёсывания заранее не прогревается. Если она выбрана, «Проверка», Настройки и первый запуск предупреждают, что на таком Mac она тормозит диктовку и всю систему.
+
+### Встречи
+- Напоминание о встрече — за 1, 2, 5 или 10 минут, отдельной настройкой. Время до начала в карточке идёт вживую, после «Подключиться» напоминание исчезает.
+- Конспект Телемоста распознаётся надёжнее, в том числе когда его включил организатор.
+
+### Прочее
+- Версия и «Проверить обновления…» — внизу левой колонки Настроек.
+- В журнале видно, кто держит защищённый ввод: зависший экран входа отличим от настоящего поля пароля. Значение поля не пишется.
+
+English: the first dictation after idle loads models one at a time instead of all at once, so 8 GB Macs no longer swap; long dictations drop the Whisper check when the main model falls more than 20 s behind; the HUD shows recognition progress after release and tells you when a press during transcription is queued; quitting no longer crashes the engine; the HUD stays readable on any background. On 8 GB Macs the local polish model is not pre-warmed and a warning is shown. Meeting reminders at 1, 2, 5 or 10 minutes; more reliable Telemost summary detection; version and “Check for Updates…” at the bottom of Settings.
+
 ## 0.1.4 — 2026-11-15
 
 ### Приватность

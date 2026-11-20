@@ -109,9 +109,11 @@ final class MeetingFolderController {
             self?.extras.prompt = nil
             self?.stopMeeting()
         }
-        extras.onJoin = { link in
+        extras.onJoin = { [weak self] link in
             guard let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
             NSWorkspace.shared.open(url)
+            // Подключился — напоминание своё отработало и уходит.
+            if case .reminder? = self?.extras.prompt { self?.extras.prompt = nil }
         }
         extras.onUseAgendaItem = { [weak self] item in
             self?.addMark(item)
@@ -440,7 +442,8 @@ final class MeetingFolderController {
         let events = calendar.meetings(around: now, days: 1)
         extras.upcoming = MeetingReminder.upcoming(events, now: now).map(UpcomingMeeting.init(event:))
         guard model.settings.meetingReminder, recorder == nil, extras.prompt == nil,
-              let due = MeetingReminder.due(events, now: now, shown: remindersShown) else { return }
+              let due = MeetingReminder.due(events, now: now, lead: TimeInterval(model.settings.meetingReminderMinutes * 60),
+                                            shown: remindersShown) else { return }
         remindersShown.insert(due.id)
         extras.prompt = .reminder(UpcomingMeeting(event: due))
     }

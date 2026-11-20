@@ -50,6 +50,9 @@ public enum Snapshots {
             model.hud = .recording
             model.dictationPaused = true
             write(hudStage(HUDView(model: model)), "hud-paused", dir, width: 460, height: 108)
+            // Тёмная тема над белой страницей: материал светлеет, контраст держит вуаль.
+            write(HUDView(model: model).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white),
+                  "hud-paused-on-white-dark", dir, width: 460, height: 108, dark: true)
         }
         // Длинная диктовка ждёт вторую модель: полоса и «Вставить сразу».
         do {
@@ -64,6 +67,23 @@ public enum Snapshots {
             model.verifyStage = "polish"
             model.verifyProgress = 0.3
             write(hudStage(HUDView(model: model)), "hud-polishing", dir, width: 460, height: 108)
+        }
+        // Основная модель догоняет речь после отпускания: полоса без «Вставить сразу».
+        do {
+            let model = demoModel()
+            model.hud = .transcribing
+            model.verifyStage = "asr"
+            model.verifyProgress = 0.7
+            write(hudStage(HUDView(model: model)), "hud-catching-up", dir, width: 460, height: 108)
+        }
+        // Нажатие во время расшифровки: запись не началась — плашка говорит, когда начнётся.
+        do {
+            let model = demoModel()
+            model.hud = .transcribing
+            model.busyHint = true
+            write(hudStage(HUDView(model: model)), "hud-busy-hint", dir, width: 460, height: 108)
+            model.verifyProgress = 0.4
+            write(hudStage(HUDView(model: model)), "hud-busy-hint-verifying", dir, width: 460, height: 108)
         }
 
         // Голосовая правка (D5): та же пилюля, своё содержимое.
@@ -137,6 +157,8 @@ public enum Snapshots {
             write(MainWindowView(model: main, entry: "d1"), "main-dictation" + (dark ? "-dark" : ""), dir,
                   width: 1080, height: 760, dark: dark)
         }
+        // Окно минимальной ширины: кнопки у слов под вопросом сжимаются до значков, а не обрезаются.
+        write(MainWindowView(model: demoModel(), entry: "d1"), "main-dictation-narrow", dir, width: 900, height: 600)
         let single = demoModel()
         write(MainWindowView(model: single, entry: "d4"), "main-dictation-single", dir, width: 1080, height: 700)
 

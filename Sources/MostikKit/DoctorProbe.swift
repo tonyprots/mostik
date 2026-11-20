@@ -24,6 +24,7 @@ public enum DoctorProbe {
         f.fnUsage = fnUsageType()
         f.keyGrabbers = runningKeyGrabbers()
         f.freeBytes = freeBytes(at: dataDir)
+        f.lowMemoryGB = MemoryProfile.lowGigabytes()
         return f
     }
 

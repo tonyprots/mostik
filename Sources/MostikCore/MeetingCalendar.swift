@@ -222,6 +222,23 @@ public enum TelemostSummary {
         return nil
     }
 
+    /// Состояние конспекта по журналу десктопного Телемоста (`telemost_gui.log`, 2026-11-16):
+    /// `CONFERENCE_VIEW conference start/end` и `summarization state Starting|Running|TurnedOff`.
+    /// Надёжнее кнопки: когда конспект включил организатор, кнопка в окне приходит без подписи.
+    /// nil — звонка в журнале нет (веб-Телемост, другой формат), false — звонок идёт без конспекта.
+    public static func fromLog(_ text: Substring) -> Bool? {
+        guard let start = text.range(of: "CONFERENCE_VIEW conference start", options: .backwards) else { return nil }
+        let tail = text[start.upperBound...]
+        if tail.contains("CONFERENCE_VIEW conference end") { return nil }
+        guard let state = tail.range(of: "summarization state ", options: .backwards) else { return false }
+        let word = tail[state.upperBound...].prefix { $0.isLetter }
+        switch word {
+        case "Running", "Starting": return true
+        case "TurnedOff", "Stopped", "Off": return false
+        default: return nil
+        }
+    }
+
     /// Ссылка события ведёт в Телемост.
     public static func isTelemostLink(_ link: String?) -> Bool {
         guard let link, let host = URL(string: link.lowercased())?.host else { return false }

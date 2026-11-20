@@ -80,6 +80,15 @@ func runSecureDictationHistoryTests() {
     check(SecureDictation.refusal(secureInput: false, field: FieldSnapshot(bundleID: "a", role: "AXTextField",
                                                                             subrole: "AXSecureTextField")) != nil,
           "поле пароля по AX-роли, даже без защищённого ввода")
+    // Лог отказа: застрявший loginwindow отличим от настоящего поля пароля, значение поля не пишем.
+    equal(SecureDictation.diagnostic(stage: "hold", secureInput: true,
+                                     holder: SecureInputHolder(pid: 661, name: "loginwindow"), field: nil),
+          "refused at hold: secureInput=true holder=loginwindow (pid 661) field=not probed")
+    equal(SecureDictation.diagnostic(stage: "start", secureInput: false, holder: nil,
+                                     field: FieldSnapshot(bundleID: "com.anthropic.claudefordesktop", role: "AXTextField",
+                                                          subrole: "AXSecureTextField", value: "секрет")),
+          "refused at start: secureInput=false holder=- field=AXTextField/AXSecureTextField in com.anthropic.claudefordesktop")
+    check(SecureDictation.diagnostic(stage: "stop", secureInput: true, holder: nil, field: nil).contains("holder=unknown"))
     let plain = HistoryEntry(id: "x", text: "t", outcome: "clipboard")
     equal(SecureDictation.forHistory(plain), plain, "другие исходы не трогаем")
 

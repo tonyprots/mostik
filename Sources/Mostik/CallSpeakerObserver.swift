@@ -322,7 +322,26 @@ final class CallSpeakerObserver {
 /// Идёт ли конспект в десктопном Телемосте: ищем кнопку ИИ в окне звонка (`TelemostSummary`).
 /// Веб-области (мессенджер) не обходим. nil — Телемост не запущен, кнопки нет или подпись непонятна.
 enum TelemostSummaryProbe {
+    /// Сначала журнал Телемоста (`TelemostSummary.fromLog`), кнопка в окне — запасной признак.
     nonisolated static func isOn() -> Bool? {
+        if let state = fromLog() { return state }
+        return fromButton()
+    }
+
+    static let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Yandex.Telemost/log/telemost_gui.log")
+
+    /// Хвост журнала: начала звонка хватает с запасом, весь файл — мегабайты.
+    nonisolated static func fromLog(_ url: URL = logURL, tail: UInt64 = 2 << 20) -> Bool? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        try? handle.seek(toOffset: size > tail ? size - tail : 0)
+        guard let data = try? handle.readToEnd() else { return nil }
+        return TelemostSummary.fromLog(Substring(String(decoding: data, as: UTF8.self)))
+    }
+
+    nonisolated static func fromButton() -> Bool? {
         guard AXIsProcessTrusted(),
               let app = NSRunningApplication.runningApplications(withBundleIdentifier: CallSpeakerObserver.telemostBundleID).first
         else { return nil }

@@ -35,9 +35,43 @@ public struct MeetingPromptView: View {
 
     @ViewBuilder private func reminderRecordButtons(_ meeting: UpcomingMeeting) -> some View {
         // Конспект ведёт сам Телемост — запись не предлагаем, остаются «Подключиться» и «Скрыть».
+        // Закрыть — крестиком в углу: «Скрыть / Dismiss» рядом с «Подключиться» читалось как «отклонить встречу».
         if !telemostCovers(meeting) { recordButton(meeting.link == nil ? .primary : .secondary) }
-        Button(L("Скрыть", "Dismiss")) { extras.onDismissPrompt() }
-            .buttonStyle(.mostik(.quiet, compact: true))
+    }
+
+    private var closeButton: some View {
+        Button { extras.onDismissPrompt() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Palette.inkSecondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(L("Закрыть напоминание", "Close the reminder"))
+        .accessibilityLabel(L("Закрыть напоминание", "Close the reminder"))
+    }
+
+    /// «Через 2 мин: …» по живому времени до начала; началась — «Начинается».
+    private func reminderTitle(_ meeting: UpcomingMeeting, now: Date) -> String {
+        let left = meeting.start.timeIntervalSince(now)
+        if left <= 15 { return L("Начинается: \(meeting.title)", "Starting: \(meeting.title)") }
+        let minutes = Int((left / 60).rounded(.up))
+        if minutes <= 1 { return L("Через минуту: \(meeting.title)", "In a minute: \(meeting.title)") }
+        return L("Через \(minutes) мин: \(meeting.title)", "In \(minutes) min: \(meeting.title)")
+    }
+
+    @ViewBuilder private func reminderHeader(_ meeting: UpcomingMeeting) -> some View {
+        HStack(alignment: .top, spacing: DS.Space.xxs) {
+            if snapshot {
+                header(symbol: "calendar", tint: Palette.accent, title: L("Через минуту: \(meeting.title)", "In a minute: \(meeting.title)"))
+            } else {
+                TimelineView(.periodic(from: .now, by: 15)) { ctx in
+                    header(symbol: "calendar", tint: Palette.accent, title: reminderTitle(meeting, now: ctx.date))
+                }
+            }
+            closeButton.padding(.top, -4).padding(.trailing, -6)
+        }
     }
 
     private func telemostCovers(_ meeting: UpcomingMeeting) -> Bool {
@@ -71,8 +105,7 @@ public struct MeetingPromptView: View {
                 }
                 .padding(.top, DS.Space.xxs)
             case let .reminder(meeting):
-                header(symbol: "calendar", tint: Palette.accent,
-                       title: L("Через минуту: \(meeting.title)", "In a minute: \(meeting.title)"))
+                reminderHeader(meeting)
                 detail(Self.timeRange(meeting) + (meeting.agenda.isEmpty ? "" : " · " + Fmt.agendaItems(meeting.agenda.count))
                        + (telemostCovers(meeting) ? " · " + L("конспект ведёт Телемост", "Telemost takes the notes") : ""))
                 // Не влезает в 340 pt — «Подключиться» уходит в свою строку.

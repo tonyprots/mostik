@@ -32,7 +32,6 @@ import json
 import queue
 import re
 import shutil
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -61,7 +60,7 @@ Emit = Callable[[dict[str, Any]], None]
 
 
 def _log(text: str) -> None:
-    print(f"[mostik] {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik] {text}")
 
 
 class MeetingAIError(Exception):

@@ -102,6 +102,8 @@ public struct MostikSettings: Codable, Equatable, Sendable {
     public var meetingAutoStop: Bool = false
     /// Напоминание за минуту до встречи из календаря со ссылкой на звонок (M13). Нужен включённый календарь.
     public var meetingReminder: Bool = true
+    /// За сколько минут до начала показывать напоминание (1, 2, 5, 10).
+    public var meetingReminderMinutes: Int = 1
     /// Аудио встречи — в Корзину macOS после готовой сводки (W13). Выключено по умолчанию.
     public var trashAudioAfterSummary: Bool = false
     /// Сводка встреч (M16, W23): учитывать ли свои записи и вставленные картинки.
@@ -188,6 +190,7 @@ public struct MostikSettings: Codable, Equatable, Sendable {
         meetingHook = (try? c.decodeIfPresent(MeetingHookSettings.self, forKey: .meetingHook)) ?? d.meetingHook
         meetingAutoStop = (try? c.decodeIfPresent(Bool.self, forKey: .meetingAutoStop)) ?? d.meetingAutoStop
         meetingReminder = (try? c.decodeIfPresent(Bool.self, forKey: .meetingReminder)) ?? d.meetingReminder
+        meetingReminderMinutes = min(max((try? c.decodeIfPresent(Int.self, forKey: .meetingReminderMinutes)) ?? d.meetingReminderMinutes, 1), 30)
         trashAudioAfterSummary = (try? c.decodeIfPresent(Bool.self, forKey: .trashAudioAfterSummary)) ?? d.trashAudioAfterSummary
         meetingNotes = (try? c.decodeIfPresent(MeetingNotesSettings.self, forKey: .meetingNotes)) ?? d.meetingNotes
         agentVoice = (try? c.decodeIfPresent(AgentVoiceSettings.self, forKey: .agentVoice)) ?? d.agentVoice

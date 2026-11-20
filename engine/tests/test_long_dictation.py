@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from conftest import FakePool, silence, tone
+from conftest import FakePool, FakeVerifier, pcm16, silence, tone
 from mostik_engine import session as session_mod
 from mostik_engine.seams import join_seam, join_windows
 from mostik_engine.session import Session
@@ -64,6 +64,83 @@ def test_short_dictation_keeps_old_deadline(monkeypatch):
     started = time.monotonic()
     assert session.finish(wait_verifier_ms=200)["verifier"] == "late"
     assert time.monotonic() - started < 1.5
+
+
+class LaggingPool(FakePool):
+    """Основная модель медленнее речи: пока распознаёт окно, приходит ещё секунда звука."""
+
+    session: Session | None = None
+
+    def recognize(self, waveform, language, **kwargs):
+        if self.session is not None:
+            self.session.append(pcm16(silence(1.0)))
+        return super().recognize(waveform, language, **kwargs)
+
+
+class Counting(FakeVerifier):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitted: list[str] = []
+
+    def submit(self, window_id, session, pcm16, language, hotwords=None):
+        self.submitted.append(window_id)
+        return True  # ответа не будет: ждать его — значит висеть до потолка
+
+
+def test_lagging_primary_sheds_verifier(monkeypatch):
+    """Основная модель отстала больше порога: проверяющую до конца записи не зовём и не ждём."""
+    _long(monkeypatch, cap_s=30.0)
+    monkeypatch.setattr(session_mod, "LAG_SHED_S", 0.5)
+    monkeypatch.setattr(session_mod, "PACK_MIN_S", 0.5)  # первая пачка уходит до отставания
+    pool, verifier = LaggingPool(), Counting()
+    session = Session("lag", "ru", pool=pool, verifier=verifier)
+    pool.session = session
+    _feed(session, np.concatenate([tone(1), silence(1)]))  # первое окно: пачка ушла, затем отставание
+    assert session.verifier_shed and verifier.cancelled == ["lag"]
+    sent = list(verifier.submitted)
+    assert sent  # до отставания проверяющая работала
+    pool.session = None
+    _feed(session, np.concatenate([tone(1), silence(1), tone(1), silence(1)]))
+    started = time.monotonic()
+    result = session.finish(wait_verifier_ms=0)
+    assert time.monotonic() - started < 2.0  # не ждём ответа на старые пачки до потолка 30 с
+    assert verifier.submitted == sent  # новые пачки не ушли
+    assert result["timings"]["verifier_shed"] is True
+    assert "слово" in result["text"]
+
+
+def test_keeping_up_keeps_verifier(monkeypatch):
+    """Успевает за речью — проверяющая работает как раньше."""
+    monkeypatch.setattr(session_mod, "LAG_SHED_S", 0.5)
+    verifier = FakeVerifier()
+    session = Session("ok", "ru", pool=FakePool(), verifier=verifier)
+    verifier.sink = session.on_verifier
+    _feed(session, np.concatenate([tone(1), silence(1), tone(1), silence(1)]))
+    result = session.finish(wait_verifier_ms=500)
+    assert not session.verifier_shed and "verifier_shed" not in result["timings"]
+    assert result["verifier"] == "done"
+
+
+def test_catch_up_progress_after_stop():
+    """После отпускания распознавание догоняет: плашка получает ход в десятых секунды."""
+    events: list[dict] = []
+    session = Session("p", "ru", pool=FakePool(), verifier=None, emit=events.append)
+    for chunk in (tone(1), silence(1), tone(1), silence(1), tone(1), silence(0.3)):
+        session.append(pcm16(chunk))  # звук пришёл, шаги не успели: всё распознаётся на finish
+    session.stopping = True
+    session.finish()
+    asr = [e for e in events if e.get("stage") == "asr"]
+    assert asr and all(e["task"] == "dictation" and e["session"] == "p" for e in asr)
+    assert [e["done"] for e in asr] == sorted(e["done"] for e in asr)
+    assert all(0 < e["done"] <= e["total"] == 53 for e in asr)  # 5,3 с звука в десятых
+    assert asr[-1]["done"] >= 50  # к концу распознано почти всё
+
+
+def test_no_catch_up_progress_while_recording():
+    events: list[dict] = []
+    session = Session("r", "ru", pool=FakePool(), verifier=None, emit=events.append)
+    _feed(session, np.concatenate([tone(1), silence(1), tone(1), silence(1)]))
+    assert not [e for e in events if e.get("stage") == "asr"]
 
 
 def test_window_seams_drop_false_periods():

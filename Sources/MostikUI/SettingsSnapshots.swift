@@ -36,6 +36,8 @@ extension Snapshots {
         model.settingsReveal = reveal
         model.doctor.checks = doctorAllGood()
         model.updatesConfigurable = true
+        model.updatesCheckable = true
+        model.appVersion = "0.1.4 (421)"
         model.agentTools.cliPath = L10n.neutralName ? "/Applications/App.app/Contents/MacOS/app"
                                                     : "/Applications/Mostik.app/Contents/MacOS/mostik"
         if L10n.neutralName {

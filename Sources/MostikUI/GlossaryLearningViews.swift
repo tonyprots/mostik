@@ -42,7 +42,7 @@ public struct LearnPromptCard: View {
             Spacer(minLength: DS.Space.xs)
             Button(L("Нет", "No")) { learning.onDecide(s, false) }
                 .buttonStyle(.mostik(.quiet, compact: true))
-            Button(L("Своё…", "Mine…")) { learning.onEditSuggestion(s) }
+            Button(L("Своё…", "Fix…")) { learning.onEditSuggestion(s) }
                 .buttonStyle(.mostik(.quiet, compact: true))
                 .help(L("Ввести правильное написание самому", "Type the right spelling yourself"))
             Button(L("Запомнить", "Remember")) { learning.onDecide(s, true) }
@@ -199,7 +199,7 @@ struct LearnSuggestionsSection: View {
                                 .foregroundStyle(Palette.inkTertiary)
                             Button(L("Нет", "No")) { learning.onDecide(s, false) }
                                 .buttonStyle(.mostik(.quiet, compact: true))
-                            Button(L("Своё…", "Mine…")) { withAnimation(Motion.quick) { startEditing(s) } }
+                            Button(L("Своё…", "Fix…")) { withAnimation(Motion.quick) { startEditing(s) } }
                                 .buttonStyle(.mostik(.quiet, compact: true))
                                 .help(L("Ввести правильное написание самому", "Type the right spelling yourself"))
                             Button(L("Запомнить", "Remember")) { learning.onDecide(s, true) }

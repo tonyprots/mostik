@@ -133,25 +133,46 @@ public struct HUDView: View {
     }
 
     /// Длинная диктовка: вторая модель сверяет текст — полоса и выход «Вставить сразу» без сверки.
+    /// `asr` — основная модель догоняет речь: полоса без кнопки, вставлять ещё нечего.
     private func verifying(_ share: Double) -> some View {
-        HStack(spacing: 0) {
-            Text(model.verifyStage == "polish" ? L("Причёсываю", "Polishing") : L("Сверяю", "Checking"))
-                .font(TType.bodyStrong)
-                .lineLimit(1)
-                .fixedSize()
-                .foregroundStyle(Palette.inkSecondary)
-                .padding(.trailing, DS.Space.s)
-            CreepingProgress(share: share).frame(width: 72).id(model.verifyStage)  // своя полоса у этапа
+        let catchingUp = model.verifyStage == "asr"
+        return HStack(spacing: 0) {
+            if model.busyHint {
+                busyHintText
+            } else {
+                Text(catchingUp ? L("Распознаю", "Transcribing")
+                     : model.verifyStage == "polish" ? L("Причёсываю", "Polishing") : L("Сверяю", "Checking"))
+                    .font(TType.bodyStrong)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .foregroundStyle(Palette.inkSecondary)
+                    .padding(.trailing, DS.Space.s)
+                CreepingProgress(share: share).frame(width: 72).id(model.verifyStage)  // своя полоса у этапа
+            }
             Spacer(minLength: DS.Space.s)
-            Button(L("Вставить сразу", "Insert now")) { model.onInsertFast() }
-                .buttonStyle(.mostik(.secondary, compact: true))
-                .help(model.verifyStage == "polish"
-                      ? L("Вставить текст без причёсывания, не дожидаясь модели", "Insert the text unpolished, without waiting for the model")
-                      : L("Вставить текст первой модели, не дожидаясь сверки второй",
-                          "Insert the first model’s text without waiting for the second check"))
+            if catchingUp {
+                languageLabel  // кнопки нет — справа язык, как в обычной расшифровке
+            } else {
+                Button(L("Вставить сразу", "Insert now")) { model.onInsertFast() }
+                    .buttonStyle(.mostik(.secondary, compact: true))
+                    .help(model.verifyStage == "polish"
+                          ? L("Вставить текст без причёсывания, не дожидаясь модели", "Insert the text unpolished, without waiting for the model")
+                          : L("Вставить текст первой модели, не дожидаясь сверки второй",
+                              "Insert the first model’s text without waiting for the second check"))
+            }
         }
         .padding(.leading, 18)
-        .padding(.trailing, 6)
+        .padding(.trailing, catchingUp ? 16 : 6)
+    }
+
+    /// Нажатие во время расшифровки новую запись не начинает — говорим это вместо подписи этапа.
+    private var busyHintText: some View {
+        Text(L("Новая запись — после вставки этой", "New recording once this one is in"))
+            .font(TType.bodyStrong)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .foregroundStyle(Palette.ink)
+            .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var transcribingPlain: some View {
@@ -159,11 +180,15 @@ public struct HUDView: View {
             WorkingArc()
                 .frame(width: 14, height: 14)
                 .padding(.trailing, 10)
-            Text(L("Расшифровка…", "Transcribing…"))
-                .font(TType.bodyStrong)
-                .lineLimit(1)
-                .fixedSize()
-                .foregroundStyle(Palette.inkSecondary)
+            if model.busyHint {
+                busyHintText
+            } else {
+                Text(L("Расшифровка…", "Transcribing…"))
+                    .font(TType.bodyStrong)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .foregroundStyle(Palette.inkSecondary)
+            }
             Spacer(minLength: DS.Space.s)
             languageLabel
         }

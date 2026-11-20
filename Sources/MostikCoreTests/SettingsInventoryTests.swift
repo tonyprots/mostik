@@ -65,8 +65,8 @@ enum SettingsInventory {
         e("Перевод ⌃⌘E", "text", "$0.translateTone =", "PolishExtrasSettings.swift", via: ".modes"),
         e("Задача ⌃⌘J", "text", "pendingMode", "PolishExtrasSettings.swift", via: ".modes"),
         // Встречи
-        e("Подсказывать о звонках", "meetings", "$0.meetingSuggest = on", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
-        e("Напоминать о встрече (вместе с подсказкой)", "meetings", "$0.meetingReminder = on", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
+        e("Подсказывать о звонках", "meetings", "bind(\\.meetingSuggest)", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
+        e("Напоминать о встречах: выкл или за сколько минут", "meetings", "$0.meetingReminder = m > 0", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
         e("Календарь", "meetings", "onSetCalendarEnabled", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
         e("Слайды звонка", "meetings", "meetingAssist.slides = on", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),
         e("Останавливать после встречи", "meetings", "\\.meetingAutoStop", "MeetingSettingsSection.swift", via: "MeetingSettingsSection"),

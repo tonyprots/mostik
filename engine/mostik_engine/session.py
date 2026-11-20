@@ -46,6 +46,10 @@ PACK_MIN_S = 8.0
 # заметно хуже, а ждать 20–60 с ради него не жалко. Пользователь может не ждать — skip_wait().
 LONG_DICTATION_S = 30.0
 LONG_WAIT_CAP_S = 180.0
+# Основная модель отстала от речи больше чем на столько (звук пришёл, пока шёл прошлый шаг):
+# машина не справляется, и проверяющая до конца записи не нужна — она отнимает у основной
+# процессор и память, а на 8 ГБ очередь росла до минут после отпускания клавиши.
+LAG_SHED_S = 20.0
 PACK_MAX_S = 24.0
 
 
@@ -268,6 +272,10 @@ class Session:
         self.vad_ms = 0.0
         self.cancelled = False
         self.step_queued = False
+        # Клавишу отпустили (`cmd_stop`): дальше распознавание догоняет — сообщаем ход в плашку.
+        self.stopping = False
+        # Отставание больше `LAG_SHED_S`: проверяющая для этой записи выключена (`_shed_verifier`).
+        self.verifier_shed = False
         # Причёсывание после `final` (D3): {backend, style, timeout_s} или None. Ставит сервер.
         self.polish: dict | None = None
         # Потоковая полировка (D3, §3): у потоковых бэкендов (MLX) — `PolishStream`, сюда
@@ -361,10 +369,32 @@ class Session:
             made.append(window)
             self._pack(window, flush=final and number == len(planned) - 1)
             self._recognize(window, waveform[start:end])
+            if self.stopping:
+                self._report_catch_up(window.end, total)
         if final and not planned:
             self._flush()
         self._cut += cut
+        behind_s = (self.samples - self._checked) / SAMPLE_RATE
+        if behind_s > LAG_SHED_S:
+            self._shed_verifier(behind_s)
         return made
+
+    def _report_catch_up(self, done: int, total: int) -> None:
+        """Плашка после отпускания: сколько звука основная модель уже распознала (десятые секунды)."""
+        if total > 0:
+            self.emit({"event": "progress", "task": "dictation", "session": self.id, "stage": "asr",
+                       "done": done * 10 // SAMPLE_RATE, "total": total * 10 // SAMPLE_RATE})
+
+    def _shed_verifier(self, behind_s: float) -> None:
+        """Основная модель не успевает за речью: проверяющую до конца записи не зовём и не ждём."""
+        if self.verifier_shed or self.verifier is None:
+            return
+        self.verifier_shed = True
+        _log(f"{self.id}: основная модель отстала на {behind_s:.0f} с — проверяющая для этой записи выключена")
+        cancel = getattr(self.verifier, "cancel", None)
+        if cancel is not None:
+            cancel(self.id)
+        self.skip_wait()
 
     def _silence_safe(self) -> bool:
         """Основной модели можно дать звук без найденной речи: Whisper на тишине выдумывает
@@ -395,7 +425,7 @@ class Session:
 
     def _send(self, pack: Pack, *, final: bool = False) -> None:
         pack.sent_final = final
-        if self.verifier is None or not self.verifier.available:
+        if self.verifier is None or not self.verifier.available or self.verifier_shed:
             pack.sent = True  # закрыта, но не отправлена: сравнивать не с чем
             return
         pack.sent = True
@@ -734,6 +764,7 @@ class Session:
                 **({"verifier_forecast_ms": forecast_ms} if forecast_ms is not None else {}),
                 **({"prepare_ms": round(self.prepare_ms, 1)} if self.prepare_ms is not None else {}),
                 **({"model_load_ms": round(self.model_load_ms, 1)} if self.model_load_ms is not None else {}),
+                **({"verifier_shed": True} if self.verifier_shed else {}),
             },
             "verifier": status,
             "stats": {

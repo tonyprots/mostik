@@ -111,13 +111,16 @@ public final class AppModel: ObservableObject {
             case .transcribing: menuIcon.set(.transcribing)
             default: menuIcon.set(.idle)
             }
-            if hud != .transcribing { verifyProgress = nil; verifyStage = "verify" }
+            if hud != .transcribing { verifyProgress = nil; verifyStage = "verify"; busyHint = false }
         }
     }
     /// Длинная диктовка ждёт вторую модель: доля проверенных пачек 0…1; nil — ожидания нет.
     @Published public var verifyProgress: Double? = nil
-    /// Чего ждём под полосой: `verify` — вторую модель, `polish` — причёсывание (кнопка обрывает и его).
+    /// Чего ждём под полосой: `verify` — вторую модель, `polish` — причёсывание (кнопка обрывает и его),
+    /// `asr` — основная модель догоняет речь после отпускания клавиши (кнопки нет: без неё текста нет).
     @Published public var verifyStage: String = "verify"
+    /// Клавишу нажали, пока идёт расшифровка: новая запись не началась — плашка говорит об этом пару секунд.
+    @Published public var busyHint = false
     /// «Вставить сразу»: не ждать вторую модель, вставить текст первой.
     public var onInsertFast: () -> Void = {}
     /// Живые данные записи — в своих объектах (шаг 2, п. 8): `AppModel` смотрят ~80 видов,
@@ -176,6 +179,8 @@ public final class AppModel: ObservableObject {
     @Published public var updatesConfigurable = false
     /// Пункт «Проверить обновления…»: только с настоящим адресом ленты (`UpdatePolicy.showsCheckForUpdates`).
     @Published public var updatesCheckable = false
+    /// Версия и номер сборки для подвала настроек: «0.1.4 (421)». Пусто — подвала нет.
+    @Published public var appVersion = ""
     /// Какие бэкенды полировщика движок считает доступными (`hello.polish`); пусто — ещё не знаем.
     @Published public var polishAvailable: [String: Bool] = [:]
     /// Почему бэкенд недоступен: `not_found`, `login` (Claude Code не вошёл), `model_missing`…

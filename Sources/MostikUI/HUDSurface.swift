@@ -4,8 +4,8 @@ import SwiftUI
 // Поверхность плавающих панелей (П9-B): плашка диктовки и мини-панель встречи.
 // В приложении — системный материал `.hudWindow` через `NSVisualEffectView`,
 // направленная тень сверху вниз и обводка 0,5 pt цветом разделителя.
-// В снимке `ImageRenderer` AppKit-вид не рисует: материал имитирован полупрозрачной
-// поверхностью над подложкой — без размытия, это честно видно на светлой подложке.
+// Поверх материала — плотная вуаль цветом темы, чтобы контраст не зависел от подложки.
+// В снимке `ImageRenderer` AppKit-вид не рисует: остаётся одна вуаль над подложкой.
 
 /// Системный материал за окном, вырезанный по форме с концентрическим радиусом.
 struct HUDMaterial: NSViewRepresentable {
@@ -49,12 +49,12 @@ struct HUDSurface<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                if snapshot {
-                    // Имитация `.hudWindow`: светлая или тёмная вуаль на 78 % — подложка проступает,
-                    // как у системного материала; размытия нет, поэтому подложка снимка — плавный градиент.
-                    shape.fill(Color.dynamic(0xF6F7F6, 0x2A2D2C).opacity(0.78))
-                } else {
-                    HUDMaterial(cornerRadius: cornerRadius)
+                ZStack {
+                    if !snapshot { HUDMaterial(cornerRadius: cornerRadius) }
+                    // Вуаль цветом темы поверх материала. Сам `.hudWindow` берёт яркость у того, что под окном:
+                    // в тёмной теме над белой страницей он светлеет, и светлый текст с кнопками пропадал.
+                    // Вуаль держит контраст при любой подложке: светлый текст на белом — от 4,5:1.
+                    shape.fill(Color.dynamic(0xF6F7F6, 0x2A2D2C).opacity(0.9))
                 }
             }
             .clipShape(shape)

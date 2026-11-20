@@ -453,6 +453,10 @@ struct SettingsTab: View {
             let name = model.polishCLIUsing == "codex" ? "Codex" : (model.polishCLIUsing == "claude" ? "Claude Code" : "Claude/Codex")
             return L("Через \(name) по подписке. Текст появится через 2–3 с.", "Via \(name) on your subscription. Text appears in 2–3 s.")
         case .mlx:
+            if let gb = MemoryProfile.lowGigabytes() {
+                return L("На Mac с \(gb) ГБ модели тесно рядом с распознаванием: диктовка и весь Mac тормозят. Лучше Claude/Codex или «Выкл».",
+                         "With \(gb) GB of memory the model crowds speech recognition: dictation and the whole Mac slow down. Claude/Codex or Off works better.")
+            }
             if model.polishAvailable["mlx"] == true {
                 return L("Модель на этом Mac: текст не уходит в сеть, около 2 с.", "On-device model: text stays local, about 2 s.")
             }
@@ -799,9 +803,33 @@ struct SettingsSidebar: View {
                 results
             }
             Spacer(minLength: 0)
+            if !model.appVersion.isEmpty { versionFooter }
         }
         .padding(DS.Space.s)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Версия и проверка обновлений — там, где их ищут: внизу левой колонки. У локальной сборки ленты
+    /// нет (`UpdatePolicy.showsCheckForUpdates`), поэтому вместо кнопки — подпись, почему её нет.
+    private var versionFooter: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("Версия \(model.appVersion)", "Version \(model.appVersion)"))
+                .font(TType.caption).foregroundStyle(Palette.inkSecondary)
+                .textSelection(.enabled)
+            if model.updatesCheckable {
+                Button(L("Проверить обновления…", "Check for Updates…")) { model.onCheckForUpdates() }
+                    .buttonStyle(.plain)
+                    .font(TType.caption).foregroundStyle(Palette.accent)
+                    .frame(minHeight: 24, alignment: .leading)
+                    .contentShape(Rectangle())
+            } else {
+                Text(L("Локальная сборка: обновляется вручную", "Local build: updated by hand"))
+                    .font(TType.caption).foregroundStyle(Palette.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, DS.Space.xs)
+        .padding(.bottom, DS.Space.xs)
     }
 
     private func paneRow(_ pane: SettingsPane) -> some View {

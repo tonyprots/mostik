@@ -51,6 +51,8 @@ PRIORITY_BACKGROUND = 1
 FILE_SLICE_S = 10.0
 FRAME_S = 0.1
 SWEEP_EVERY_S = 15.0
+# Локальная LLM поднимается после моделей речи, а не вместе с ними, но ждёт их не дольше этого.
+LLM_AFTER_SPEECH_CAP_S = 60.0
 DEFAULT_FILE_WAIT_MS = 120_000
 
 
@@ -174,6 +176,8 @@ class Engine:
         self._meetings: queue.Queue = queue.Queue()
         self.meeting_running = threading.Event()
         self._stopping = threading.Event()
+        self._llm_warming: set[str] = set()  # бэкенды LLM, чей прогрев ждёт моделей речи
+        self._llm_warming_lock = threading.Lock()
         threading.Thread(target=self._worker, name="mostik-worker", daemon=True).start()
         threading.Thread(target=self._meeting_lane, name="mostik-meetings", daemon=True).start()
         threading.Thread(target=self._sweeper, name="mostik-sweeper", daemon=True).start()
@@ -325,7 +329,13 @@ class Engine:
         if getattr(backend, "streaming", False) or getattr(backend, "prespawn", False):
             # MLX: инструкция уходит модели сразу, окна — по ходу речи (D3). claude -p: процесс
             # поднимается сейчас, текст — одним сообщением на отпускании (шаг 1, п. 6).
-            session.polish_stream = backend.open_stream(self._polish_request(session.polish, "", session.language))
+            request = self._polish_request(session.polish, "", session.language)
+            if getattr(backend, "streaming", False) and self._speech_models_cold(session):
+                # Модели речи ещё грузятся: локальную LLM не поднимаем вместе с ними —
+                # её прогреет `_prepare`, когда они будут готовы.
+                session.polish_stream = backend.open_stream(request, spawn=False)
+            else:
+                session.polish_stream = backend.open_stream(request)
 
     @staticmethod
     def _polish_config(payload: dict) -> dict | None:
@@ -389,6 +399,59 @@ class Engine:
             return next((c for c in clients.values() if getattr(c, "model", "") == "whisper"), None)
         return self.verifier if hasattr(self.verifier, "submit_detect") else None
 
+    def _speech_clients(self) -> list[Any]:
+        """Процессы проверяющих (Whisper, Parakeet); в тестах — подставной клиент."""
+        clients = getattr(self.verifier, "clients", None)
+        return list(clients.values()) if isinstance(clients, dict) else [self.verifier]
+
+    @staticmethod
+    def _client_state(client: Any) -> str:
+        """`loading` | `ready` | `dead`; у подставных клиентов без `status` — `ready`."""
+        status = getattr(client, "status", None)
+        return status()[0] if callable(status) else "ready"
+
+    def _speech_models_cold(self, session: Session) -> bool:
+        """Сессии предстоит загрузить модель речи: основную или процесс Whisper/Parakeet."""
+        has_primary = getattr(self.pool, "has_primary", None)
+        if has_primary is not None and not has_primary(session.language):
+            return True
+        needed = []
+        if getattr(session, "detector", None) is not None:
+            needed.append(self._whisper_client())
+        if getattr(session, "verifier", None) is not None:
+            needed.append(session.verifier)
+        return any(client is not None and self._client_state(client) != "ready" for client in needed)
+
+    def _warm_llm_after_speech(self, backend_name: str) -> None:
+        """Поднять локальную LLM, когда процессы речи догрузятся (не дольше `LLM_AFTER_SPEECH_CAP_S`).
+
+        Ждёт в своём потоке: рабочий поток в это время распознаёт окна. Повторный вызов, пока
+        прежний ждёт, ничего не делает."""
+        warm = getattr(self.polishers.get(backend_name), "warm", None)
+        if not backend_name or warm is None:
+            return
+        with self._llm_warming_lock:
+            if backend_name in self._llm_warming:
+                return
+            self._llm_warming.add(backend_name)
+
+        def run() -> None:
+            try:
+                deadline = time.monotonic() + LLM_AFTER_SPEECH_CAP_S
+                while time.monotonic() < deadline and any(
+                        self._client_state(client) == "loading" for client in self._speech_clients()):
+                    if self._stopping.wait(0.1):
+                        return
+                if not self._stopping.is_set():
+                    warm()
+            except Exception:  # noqa: BLE001 — без прогрева LLM поднимется на первом запросе
+                log("сбой прогрева LLM:\n" + crash_report.safe_traceback())
+            finally:
+                with self._llm_warming_lock:
+                    self._llm_warming.discard(backend_name)
+
+        threading.Thread(target=run, name="mostik-llm-warm", daemon=True).start()
+
     def _setup_language_detection(self, session: Session, payload: dict) -> None:
         from .language_detect import allowed_languages
 
@@ -423,17 +486,14 @@ class Engine:
         """В рабочем потоке: словари, модель, проверяющая."""
         prepared = time.monotonic()
         session.project_root, session.folders = project, folders
-        if session.detector is not None:
-            client = self._whisper_client()
-            if client is not None:
-                client.ensure()
         index, hotwords = self._terms_for(project, session.language, folders)
         session.terms = index
         session.hotwords = hotwords
         session.personal = self.personal.entries(session.language)
         session.rejected_doubts = rejected_keys(self._learning_store().rejected_doubts())
-        if session.verifier is not None:
-            session.verifier.ensure()
+        # Порядок загрузки после простоя: основная модель и VAD, затем процесс Whisper, затем
+        # локальная LLM. Раньше все три стартовали разом, и на 8 ГБ это уводило в своп: GigaAM
+        # грузился 23 с вместо 1,5 с, Whisper — 20 с, Gemma — 55 с.
         # Шаг 0: сколько ушло на подготовку и была ли загрузка модели (первая диктовка после простоя).
         has_primary = getattr(self.pool, "has_primary", None)
         cold = has_primary is not None and not has_primary(session.language)
@@ -441,6 +501,17 @@ class Engine:
         self.pool.primary(session.language)
         session.model_load_ms = (time.monotonic() - loading) * 1000 if cold else 0.0
         self.pool.vad()
+        if session.detector is not None:
+            client = self._whisper_client()
+            if client is not None:
+                client.ensure()
+        if session.verifier is not None:
+            session.verifier.ensure()
+        stream = getattr(session, "polish_stream", None)
+        backend = self.polishers.get(session.polish["backend"]) if session.polish else None
+        if stream is not None and getattr(backend, "streaming", False) and not getattr(stream, "opened", True):
+            # Поток открыт без процесса (модели речи грузились): поднимаем LLM, когда Whisper готов.
+            self._warm_llm_after_speech(session.polish["backend"])
         session.prepare_ms = (time.monotonic() - prepared) * 1000
 
     # --- команды ----------------------------------------------------------
@@ -574,23 +645,26 @@ class Engine:
         language = command.get("language") or "ru"
         command_id = command.get("id")
         polish = command.get("polish") if isinstance(command.get("polish"), dict) else {}
-        warm = getattr(self.polishers.get(polish.get("backend") or ""), "warm", None)
-        if warm:
-            warm()  # локальная LLM грузится в своём процессе, заранее (§4)
+        llm = polish.get("backend") or ""
 
         def job() -> None:
+            # Локальная LLM грузится в своём процессе заранее (§4), но после моделей речи:
+            # одновременная загрузка всех трёх на 8 ГБ уводила в своп.
             started = time.monotonic()
             try:
                 loaded = self.pool.warmup(language)
             except ModelMissing as error:
                 self.error("model_missing", str(error), command_id=command_id)
+                self._warm_llm_after_speech(llm)
                 return
             except Exception as error:  # noqa: BLE001
                 self.error("internal", f"{type(error).__name__}: {error}", command_id=command_id)
+                self._warm_llm_after_speech(llm)
                 return
             verifier = self._verifier_for(language)
             if self.verifier_allowed(language) and command.get("verify", True):
                 verifier.ensure()
+            self._warm_llm_after_speech(llm)
             self.reply(command_id, loaded=loaded, seconds=round(time.monotonic() - started, 2),
                        verifier=verifier.running())
 
@@ -650,6 +724,7 @@ class Engine:
             session = self.sessions.pop(session_id, None)
         if session is None:
             raise EngineError("internal", f"нет сессии {session_id!r}")
+        session.stopping = True  # шаг, что сейчас в работе, уже сообщает ход распознавания
         wait_ms = float(command.get("wait_verifier_ms", 500) or 0)
         self.submit(PRIORITY_SESSION, lambda: self._finish(session, wait_ms, stop_at, command.get("id")))
 

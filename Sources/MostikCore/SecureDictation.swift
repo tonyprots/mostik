@@ -16,6 +16,13 @@ import Foundation
 /// `secure_input` хранится без текста, сомнений, правок и звука и в файле, и в памяти приложения
 /// (`forHistory` через `HistoryStore.record`), повтор H3 её пропускает (`RecentDictations.lastWithText`),
 /// а движок такие записи агентам не отдаёт (`agent_api.history_entries`).
+/// Процесс, включивший защищённый ввод; `name` — nil, если путь процесса не прочитался.
+public struct SecureInputHolder: Equatable, Sendable {
+    public var pid: Int32
+    public var name: String?
+    public init(pid: Int32, name: String?) { self.pid = pid; self.name = name }
+}
+
 public enum SecureDictation {
     public static let outcome = "secure_input"
 
@@ -32,6 +39,15 @@ public enum SecureDictation {
         guard secureInput || field?.isSecure == true else { return nil }
         return UIText.pick("Поле пароля — запись не сохранена, текст не вставлен",
                            "Password field — recording discarded, nothing typed")
+    }
+
+    /// Строка лога об отказе: какая из двух причин сработала, кто держит флаг и что за поле в фокусе.
+    /// Значение поля в лог не попадает — только роль и приложение.
+    public static func diagnostic(stage: String, secureInput: Bool, holder: SecureInputHolder?,
+                                  field: FieldSnapshot?) -> String {
+        let who = !secureInput ? "-" : holder.map { "\($0.name ?? "?") (pid \($0.pid))" } ?? "unknown"
+        let focus = field.map { "\($0.role ?? "?")/\($0.subrole ?? "-") in \($0.bundleID)" } ?? "not probed"
+        return "refused at \(stage): secureInput=\(secureInput) holder=\(who) field=\(focus)"
     }
 
     /// Запись истории для отклонённой вставки в защищённое поле: без текста, сомнений, правок и звука.

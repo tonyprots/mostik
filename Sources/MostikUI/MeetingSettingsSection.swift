@@ -6,19 +6,16 @@ import MostikCore
 /// встречу начинает «Записать?» или ⌃⌘M. Всё, что трогает данные или запускает чужой код, выключено по умолчанию.
 struct MeetingSettingsSection: View {
     @ObservedObject var model: AppModel
+    static let reminderLeads = [1, 2, 5, 10]
 
     var body: some View {
         let calendar = model.settings.calendarEnabled
         FormGroup(title: L("Звонки", "Calls")) {
-            // «Предлагать запись» и «Напоминать о встрече» — одна настройка: оба про «Mostik подскажет записать».
             FormToggle(title: L("Подсказывать о звонках", "Suggest recording calls"),
-                       hint: calendar ? L("Когда начнётся звонок, Mostik предложит его записать, а за минуту до встречи напомнит.",
-                                          "When a call starts, Mostik offers to record it, and reminds you a minute before a meeting.")
-                                      : L("Когда начнётся звонок, Mostik предложит его записать.", "When a call starts, Mostik offers to record it."),
-                       details: L("Звонок занял микрофон — появится «Записать / Нет». С календарём ещё и напоминание за минуту до события: ссылка на звонок и кнопка записи. Сам Mostik запись не начинает.",
-                                  "When a call takes the mic, “Record / No” appears. With the calendar on, you also get a reminder a minute before an event: the call link and a record button. Mostik never starts recording by itself."),
-                       isOn: Binding(get: { model.settings.meetingSuggest },
-                                     set: { on in update { $0.meetingSuggest = on; $0.meetingReminder = on } }))
+                       hint: L("Когда начнётся звонок, Mostik предложит его записать.", "When a call starts, Mostik offers to record it."),
+                       details: L("Звонок занял микрофон — появится «Записать / Нет». Сам Mostik запись не начинает.",
+                                  "When a call takes the mic, “Record / No” appears. Mostik never starts recording by itself."),
+                       isOn: bind(\.meetingSuggest))
             FormDivider()
             FormToggle(title: L("Календарь", "Calendar"),
                        hint: calendar ? L("Названия встреч, участники, напоминания и справка перед встречей.",
@@ -31,6 +28,18 @@ struct MeetingSettingsSection: View {
             if calendar {
                 FormDivider()
                 CalendarSourcesRows(model: model)
+            }
+            FormDivider()
+            // Напоминание: показывать ли и за сколько минут — одним меню.
+            FormRow(title: L("Напоминать о встречах", "Meeting reminders"),
+                    hint: calendar ? L("Карточка со ссылкой на звонок и кнопкой записи перед началом встречи.",
+                                       "A card with the call link and a record button before a meeting starts.")
+                                   : L("Нужен календарь.", "Needs the calendar."),
+                    enabled: calendar) {
+                FormMenu(options: [(0, L("Не напоминать", "Off"))] + Self.reminderLeads.map { ($0, L("За \($0) мин", "\($0) min before")) },
+                         selection: Binding(get: { model.settings.meetingReminder ? model.settings.meetingReminderMinutes : 0 },
+                                            set: { m in update { $0.meetingReminder = m > 0; if m > 0 { $0.meetingReminderMinutes = m } } }),
+                         label: L("Напоминать о встречах", "Meeting reminders"))
             }
             FormDivider()
             FormToggle(title: L("Останавливать запись после встречи", "Stop recording after the meeting"),

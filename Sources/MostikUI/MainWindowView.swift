@@ -462,6 +462,7 @@ struct DictationDetail: View {
                         Text(doubt.suggestion).font(TType.bodyStrong).foregroundStyle(Palette.ink)
                     }
                 }
+                .fixedSize()  // само слово не режется — режется контекст под ним
                 if !doubt.context.isEmpty {
                     Text("…\(doubt.context)…")
                         .font(TType.callout)
@@ -472,36 +473,61 @@ struct DictationDetail: View {
             Spacer(minLength: DS.Space.xs)
             // C5: отказ снимает отметку и больше не предлагает эту пару; принятие правит текст записи
             // и кладёт написание в словарь. Обе строки уходят из списка сразу.
+            // Узкая колонка: сначала прячутся подписи тихих кнопок, потом и у «Запомнить» — остаются значки с подсказками.
+            ViewThatFits(in: .horizontal) {
+                doubtActions(doubt, index: index, labels: .all)
+                doubtActions(doubt, index: index, labels: .primary)
+                doubtActions(doubt, index: index, labels: .none)
+            }
+            .layoutPriority(1)
+        }
+        .padding(.leading, DS.Space.s)
+        .padding(.trailing, DS.Space.xs)  // с отступом карточки — те же 12 pt, что у кнопки справа
+        .padding(.vertical, 10)
+    }
+
+    private enum DoubtLabels { case all, primary, none }
+
+    private func doubtActions(_ doubt: Doubt, index: Int, labels: DoubtLabels) -> some View {
+        let fixed = doubt.suggestion.isEmpty ? doubt.heard : doubt.suggestion
+        return HStack(spacing: DS.Space.xs) {
             Button {
                 withAnimation(Motion.quick) { model.onRejectDoubt(entry.id, doubt) }
             } label: {
-                Label(L("Отклонить", "Dismiss"), systemImage: "xmark")
+                doubtLabel(L("Отклонить", "Dismiss"), "xmark", text: labels == .all)
             }
             .buttonStyle(.mostik(.quiet, compact: true))
             .help(L("Оставить как распознано и больше не предлагать", "Keep it as transcribed and stop suggesting this"))
+            .accessibilityLabel(L("Отклонить", "Dismiss"))
             Button {
-                doubtDraft = doubt.suggestion.isEmpty ? doubt.heard : doubt.suggestion
+                doubtDraft = fixed
                 withAnimation(Motion.quick) { editingDoubt = index }
             } label: {
-                Label(L("Своё…", "Mine…"), systemImage: "pencil")
+                doubtLabel(L("Своё…", "Fix…"), "pencil", text: labels == .all)
             }
             .buttonStyle(.mostik(.quiet, compact: true))
             .help(L("Ввести, как было на самом деле", "Type what it really was"))
+            .accessibilityLabel(L("Ввести своё", "Type your own"))
             Button {
-                withAnimation(Motion.quick) {
-                    model.onAcceptDoubt(entry.id, doubt.heard, doubt.suggestion.isEmpty ? doubt.heard : doubt.suggestion)
-                }
+                withAnimation(Motion.quick) { model.onAcceptDoubt(entry.id, doubt.heard, fixed) }
             } label: {
-                Label(L("Запомнить", "Remember"), systemImage: "checkmark")
+                doubtLabel(L("Запомнить", "Remember"), "checkmark", text: labels != .none)
             }
             .buttonStyle(.mostik(.secondary, compact: true))
             .help(doubt.suggestion.isEmpty || doubt.suggestion == doubt.heard
                   ? L("Так и писать дальше", "Keep this spelling from now on")
                   : L("Исправить текст и писать так дальше", "Fix the text and spell it this way from now on"))
+            .accessibilityLabel(L("Запомнить", "Remember"))
         }
-        .padding(.leading, DS.Space.s)
-        .padding(.trailing, DS.Space.xs)  // с отступом карточки — те же 12 pt, что у кнопки справа
-        .padding(.vertical, 10)
+        .fixedSize()
+    }
+
+    @ViewBuilder private func doubtLabel(_ title: String, _ icon: String, text: Bool) -> some View {
+        if text {
+            Label(title, systemImage: icon).lineLimit(1)
+        } else {
+            Image(systemName: icon)
+        }
     }
 
     private var corrections: some View {

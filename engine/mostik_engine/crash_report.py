@@ -36,6 +36,22 @@ def enable_faulthandler() -> None:
         pass
 
 
+def stderr_line(text: str) -> None:
+    """Строка журнала в stderr (`engine.log`). На выходе приложение закрывает канал раньше,
+    чем движок гасит процессы моделей, и прощальная строка «процесс … остановлен» роняла
+    движок с `BrokenPipeError` (0.1.2). Закрытый канал — не сбой: дальше пишем в /dev/null,
+    чтобы и финальный сброс буфера при выходе интерпретатора не ругался."""
+    try:
+        print(text, file=sys.stderr, flush=True)
+    except (BrokenPipeError, OSError, ValueError):
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stderr.fileno())
+            os.close(devnull)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
 def redact(message: str, limit: int = 300) -> str:
     """Строки в кавычках → «…», переводы строк → пробел, длина ≤ limit."""
     flat = " ".join(_QUOTED.sub("«…»", message).split())
@@ -108,7 +124,7 @@ def answered(engine, command_id, job):
             job()
         except Exception as error:  # noqa: BLE001
             try:
-                print("сбой фоновой задачи:\n" + safe_traceback(), file=sys.stderr, flush=True)
+                stderr_line("сбой фоновой задачи:\n" + safe_traceback())
                 engine.error("internal", f"{type(error).__name__}: {redact(str(error))}", command_id=command_id)
             except Exception:  # noqa: BLE001 — сообщить не вышло: поток всё равно не роняем
                 pass

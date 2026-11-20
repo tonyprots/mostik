@@ -298,6 +298,120 @@ def test_cancel_cancels_stream(tmp_path):
     assert streaming.streams and streaming.streams[0].cancelled
 
 
+# --- порядок загрузки после простоя ----------------------------------------------------
+# На 8 ГБ одновременная загрузка основной модели, Whisper и Gemma уводила в своп. Теперь
+# порядок: основная модель и VAD → процесс Whisper → локальная LLM, когда Whisper готов.
+
+
+class ColdPool(FakePool):
+    """Основная модель выгружена по простою и грузится на `primary`."""
+
+    def __init__(self, order: list[str], loaded: bool = False) -> None:
+        super().__init__()
+        self.order, self.loaded = order, loaded
+
+    def has_primary(self, language):
+        return self.loaded
+
+    def primary(self, language):
+        if not self.loaded:
+            self.order.append("primary")
+            self.loaded = True
+        return self
+
+    def warmup(self, language):
+        self.primary(language)
+        return ["fake"]
+
+
+class LoadingVerifier(FakeVerifier):
+    """Процесс Whisper: `ensure` поднимает его, модель «грузится», пока тест не скажет `ready`."""
+
+    def __init__(self, order: list[str], ready: bool = False) -> None:
+        super().__init__()
+        self.order, self.ready, self.started = order, ready, ready
+
+    def ensure(self):
+        if not self.started:
+            self.order.append("whisper")
+            self.started = True
+        return True
+
+    def status(self):
+        if not self.started:
+            return "dead", None
+        return ("ready", 0.0) if self.ready else ("loading", None)
+
+
+def _until(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def _staged_engine(tmp_path, backend, order, *, warm=False):
+    sink = Sink()
+    verifier = LoadingVerifier(order, ready=warm)
+    eng = Engine(sink, pool=ColdPool(order, loaded=warm), verifier=verifier,
+                 personal=PersonalGlossary(tmp_path / "glossary.yaml", import_transcriber=False),
+                 polishers={"mlx": backend})
+    verifier.sink = eng._on_verifier
+    return eng, sink, verifier
+
+
+def test_cold_dictation_starts_llm_after_speech_models(fake, tmp_path):
+    backend, _ = fake()
+    order: list[str] = []
+    eng, sink, verifier = _staged_engine(tmp_path, backend, order)
+    try:
+        send(eng, cmd="start", id=1, session="s", language="ru", project=None, verify=True,
+             polish={"backend": "mlx", "style": "plain"})
+        sink.wait(lambda e: e.get("id") == 1)
+        assert not backend.client.running()  # поток открыт, но процесс LLM на старте не поднят
+        assert _until(lambda: "whisper" in order)
+        assert order == ["primary", "whisper"]  # основная модель раньше Whisper
+        time.sleep(0.3)
+        assert not backend.client.running()  # Whisper ещё грузится — LLM ждёт
+        verifier.ready = True
+        assert _until(backend.client.running)  # Whisper готов — LLM поднимается
+    finally:
+        send(eng, cmd="cancel", id=2, session="s")
+        backend.stop()
+
+
+def test_warm_dictation_opens_llm_stream_at_once(fake, tmp_path):
+    backend, log = fake()
+    eng, sink, _ = _staged_engine(tmp_path, backend, [], warm=True)
+    try:
+        send(eng, cmd="start", id=1, session="s", language="ru", project=None, verify=True,
+             polish={"backend": "mlx", "style": "plain"})
+        sink.wait(lambda e: e.get("id") == 1)
+        assert backend.client.running()  # всё загружено — поток открывается сразу, как раньше
+        assert _until(lambda: any(op.get("op") == "open" for op in ops(log)))
+    finally:
+        send(eng, cmd="cancel", id=2, session="s")
+        backend.stop()
+
+
+def test_warmup_starts_llm_after_speech_models(fake, tmp_path):
+    backend, _ = fake()
+    order: list[str] = []
+    eng, sink, verifier = _staged_engine(tmp_path, backend, order)
+    try:
+        send(eng, cmd="warmup", id=1, language="ru", polish={"backend": "mlx"})
+        reply = sink.wait(lambda e: e.get("id") == 1)
+        assert reply["ok"] and order == ["primary", "whisper"]
+        time.sleep(0.3)
+        assert not backend.client.running()
+        verifier.ready = True
+        assert _until(backend.client.running)
+    finally:
+        backend.stop()
+
+
 # --- живой тест -------------------------------------------------------------------------
 
 @pytest.mark.slow

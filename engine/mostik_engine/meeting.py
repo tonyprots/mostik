@@ -840,7 +840,7 @@ def record_run(output: Path, params: dict[str, Any], *, finished: bool) -> None:
 
 def track_log(track: str, text: str) -> None:
     """Строка хода дорожки в engine.log — со временем: без него зависание не отличить от очереди."""
-    print(f"[mostik {time.strftime('%H:%M:%S')}] meeting {track}: {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik {time.strftime('%H:%M:%S')}] meeting {track}: {text}")
 
 
 def diarization_problem(*, offline: bool = True) -> str | None:
@@ -1031,7 +1031,7 @@ def _run_meeting(payload: dict[str, Any], emit: Emit, out_dir: Path, started: fl
     diarize_system = system_ok and payload.get("diarize", True) is not False
     unavailable = diarization_problem(offline=options["offline"]) if diarize_system else None
     if unavailable:
-        print(f"meeting: без разделения по голосам — {unavailable}", file=sys.stderr, flush=True)
+        crash_report.stderr_line(f"meeting: без разделения по голосам — {unavailable}")
         diarize_system = False
     plan: list[tuple[str, Path, bool]] = []
     if mic_ok:

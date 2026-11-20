@@ -108,6 +108,7 @@ final class AppController {
     /// Время диктовки без пауз (пауза — точкой в плашке).
     private var dictationClock: MeetingClock?
     private var hudHideTask: Task<Void, Never>?
+    private var busyHintTask: Task<Void, Never>?
     private var accessibilityTimer: Timer?
     private var permissionsChecked = false
     private var relaunching = false
@@ -315,6 +316,11 @@ final class AppController {
         })
         model.updatesConfigurable = UpdatePolicy.showsUpdateLedgerLine(updater?.availability ?? .frameworkMissing)
         model.updatesCheckable = updater?.showsCheckItem ?? false
+        let info = Bundle.main.infoDictionary
+        if let version = info?["CFBundleShortVersionString"] as? String {
+            let build = info?["CFBundleVersion"] as? String
+            model.appVersion = build.map { "\(version) (\($0))" } ?? version
+        }
         try? FileManager.default.createDirectory(at: paths.recordings, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: paths.meetings, withIntermediateDirectories: true)
         loadHistoryInBackground()
@@ -768,6 +774,20 @@ final class AppController {
         // Диагностика: клавиши диктовки и что с ними сделала машина. Без текста диктовки.
         AppLog.shared.event("keys", "\(event) state=\(before) effects=\(effects) meeting=\(meetingRecorder != nil)")
         apply(effects)
+        if effects.isEmpty, event == .holdBegan || event == .togglePressed, before.isBusy { nudgeBusy() }
+    }
+
+    /// Нажатие пришло в расшифровку или вставку и пропало (`droppedPresses`): раньше — молча.
+    /// Теперь плашка пару секунд говорит, что новая запись начнётся после вставки.
+    private func nudgeBusy() {
+        guard model.hud == .transcribing else { return }
+        model.busyHint = true
+        busyHintTask?.cancel()
+        busyHintTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.model.busyHint = false
+        }
     }
 
     private func apply(_ effects: [DictationEffect]) {
@@ -806,6 +826,7 @@ final class AppController {
         }
         // П10 р4 Р4-4л: в поле пароля не записываем вовсе — ни причёсывания, ни истории, ни агентов.
         if let refusal = SecureDictation.refusal(secureInput: SecureInput.enabled, field: nil) {
+            logSecureRefusal("hold", field: nil)
             apply(machine.handle(.failure(refusal))); return
         }
         let settings = model.settings
@@ -909,6 +930,7 @@ final class AppController {
         // П10 р4 Р4-4л: AX-роль поля — до контекста поля и причёсывания (поле пароля без защищённого ввода).
         // Движок о такой записи не узнаёт вовсе.
         if let refusal = SecureDictation.refusal(secureInput: SecureInput.enabled, field: startField) {
+            logSecureRefusal("start", field: startField)
             discardRecording(id); apply(machine.handle(.failure(refusal))); return
         }
 
@@ -1047,6 +1069,7 @@ final class AppController {
         }
         // П10 р5: поле пароля появилось посреди записи — не расшифровываем, звук удаляем.
         if let refusal = SecureDictation.stopRefusal(secureInput: SecureInput.enabled, field: FocusedField.snapshot()) {
+            logSecureRefusal("stop", field: FocusedField.snapshot())
             dropSecureRecording(id, file: file, refusal: refusal); return
         }
         current.file = file
@@ -1118,6 +1141,14 @@ final class AppController {
     }
 
     /// П10 р5: запись в поле пароля — без звука, расшифровки и истории; причина в плашке.
+    /// Отказ по защищённому вводу — в лог с причиной: флаг общий на систему, и без держателя застрявший
+    /// `loginwindow` неотличим от настоящего поля пароля.
+    private func logSecureRefusal(_ stage: String, field: FieldSnapshot?) {
+        let flag = SecureInput.enabled
+        AppLog.shared.event("secure", SecureDictation.diagnostic(stage: stage, secureInput: flag,
+                                                                 holder: flag ? SecureInput.holder : nil, field: field))
+    }
+
     private func dropSecureRecording(_ id: String, file: RecordingFile, refusal: String) {
         try? FileManager.default.removeItem(at: file.url)
         startGate?.close()
@@ -1199,6 +1230,7 @@ final class AppController {
         // Хвост р5 Ф-4: и флаг защищённого ввода, и роль AXSecureTextField; до голосовой команды — иначе пароль,
         // похожий на команду, лёг бы в историю с исходом `command`.
         if SecureDictation.stopRefusal(secureInput: SecureInput.enabled, field: FocusedField.snapshot()) != nil {
+            logSecureRefusal("insert", field: FocusedField.snapshot())
             polishExtras.cancelStream(session: id)
             let refused = HistoryEntry(id: id, text: text, language: result.language, audioSeconds: file.seconds,
                                        audioPath: file.url.path, outcome: SecureDictation.outcome)

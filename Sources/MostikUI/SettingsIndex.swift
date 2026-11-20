@@ -47,7 +47,8 @@ struct SettingsIndex {
             Item(id: "taskMode", pane: .text, title: L("Мысли вслух → задача", "Thinking aloud → task"), keywords: "task задача ⌃⌘J", reveal: "styles"),
             Item(id: "tonePreview", pane: .text, title: L("Как это будет выглядеть", "How it will look"), keywords: "preview превью тон", reveal: "styles"),
             // Встречи
-            Item(id: "meetingSuggest", pane: .meetings, title: L("Подсказывать о звонках", "Suggest recording calls"), keywords: "call звонок zoom напоминание reminder"),
+            Item(id: "meetingSuggest", pane: .meetings, title: L("Подсказывать о звонках", "Suggest recording calls"), keywords: "call звонок zoom"),
+            Item(id: "meetingReminder", pane: .meetings, title: L("Напоминать о встречах", "Meeting reminders"), keywords: "напоминание reminder календарь calendar минут minutes"),
             Item(id: "calendar", pane: .meetings, title: L("Календарь", "Calendar"), keywords: "calendar календарь"),
             Item(id: "calendarGoogle", pane: .meetings, title: L("Google Календарь", "Google Calendar"), keywords: "google gmail calendar account oauth календарь гугл аккаунт"),
             Item(id: "calendarYandex", pane: .meetings, title: L("Яндекс Календарь", "Yandex Calendar"), keywords: "yandex caldav calendar app password яндекс календарь пароль приложения"),

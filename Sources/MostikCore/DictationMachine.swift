@@ -8,6 +8,14 @@ public enum DictationState: Equatable, Sendable {
     case transcribing(session: String, audioSeconds: Double)
     case inserting(session: String)
     case failed(message: String)
+
+    /// Расшифровка или вставка: новое нажатие сюда не начинает запись и пропадает (`droppedPresses`).
+    public var isBusy: Bool {
+        switch self {
+        case .transcribing, .inserting: true
+        default: false
+        }
+    }
 }
 
 public enum DictationInput: Equatable, Sendable {

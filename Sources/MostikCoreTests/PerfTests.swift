@@ -86,6 +86,10 @@ func runPerfTests() {
         t.handle(.holdBegan(at: 0)); t.handle(.holdEnded(at: 1))
         t.handle(.holdBegan(at: 1.5))
         equal(t.droppedPresses, 1, "нажатие во время расшифровки — отброшено (полный вариант не делали)")
+        check(t.state.isBusy, "расшифровка — занята: приложение показывает подсказку в плашке")
+        check(DictationState.inserting(session: "t").isBusy, "вставка — тоже")
+        check(!DictationState.idle.isBusy && !DictationState.recording(session: "t", startedAt: 0, toggled: false).isBusy,
+              "в простое и в записи нажатие не пропадает")
         equal(t.handle(.pastePosted), [], "⌘V без вставки — ничего")
     }
 
@@ -166,11 +170,22 @@ func runPerfTests() {
     // Шаг 1, п. 7: локальную LLM прогреваем, только если причёсывание на MLX включено.
     do {
         var s = MostikSettings()
-        equal(WarmupPolicy.polishBackendToWarm(s), nil, "по умолчанию причёсывание выключено — LLM не греем")
+        equal(WarmupPolicy.polishBackendToWarm(s, lowMemory: false), nil, "по умолчанию причёсывание выключено — LLM не греем")
         s.polish.backend = .mlx
-        equal(WarmupPolicy.polishBackendToWarm(s), s.polish.effectiveBackend == .mlx ? "mlx" : nil, "MLX — греем")
+        equal(WarmupPolicy.polishBackendToWarm(s, lowMemory: false), s.polish.effectiveBackend == .mlx ? "mlx" : nil, "MLX — греем")
+        equal(WarmupPolicy.polishBackendToWarm(s, lowMemory: true), nil, "мало памяти — MLX не греем заранее")
         s.polish.backend = .claude
-        equal(WarmupPolicy.polishBackendToWarm(s), nil, "claude — облако, греть нечего")
+        equal(WarmupPolicy.polishBackendToWarm(s, lowMemory: false), nil, "claude — облако, греть нечего")
+    }
+
+    // Мало памяти: 8 ГБ и меньше.
+    do {
+        check(MemoryProfile.isLow(8 << 30), "8 ГБ — мало")
+        check(MemoryProfile.isLow(UInt64(7.5 * Double(1 << 30))), "раннер с 7,5 ГБ — мало")
+        check(!MemoryProfile.isLow(16 << 30), "16 ГБ — хватает")
+        check(!MemoryProfile.isLow(0), "память не прочиталась — не мало")
+        equal(MemoryProfile.lowGigabytes(8 << 30), 8)
+        equal(MemoryProfile.lowGigabytes(16 << 30), nil)
     }
 
     // Шаг 2, п. 10: частые правки (ввод в поле) сводятся в одну запись после паузы.

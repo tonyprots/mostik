@@ -148,6 +148,22 @@ func runGestureDoctorTests() {
     equal(check_(.engine)?.fix, .restartEngine)
     check(check_(.models)?.detail.contains("GigaAM v3") == true, "какой модели нет")
     equal(check_(.models)?.fix, .downloadModels, "кнопка «Скачать»")
+    // Мало памяти и причёсывание на этом Mac — предупреждение со ссылкой в Настройки; хватает — всё в порядке.
+    do {
+        var m = DoctorFacts()
+        m.llmBackend = "mlx"
+        m.llmAvailable = true
+        m.lowMemoryGB = 8
+        let low = Doctor.evaluate(m, russian: true).first { $0.kind == .llm }
+        equal(low?.status, .warning, "8 ГБ и локальная модель")
+        equal(low?.fix, .openPolish)
+        check(low?.detail.contains("8 ГБ") == true, "в подписи — сколько памяти")
+        m.lowMemoryGB = nil
+        equal(Doctor.evaluate(m, russian: true).first { $0.kind == .llm }?.status, .ok, "памяти хватает")
+        m.lowMemoryGB = 8
+        m.llmBackend = "claude"
+        equal(Doctor.evaluate(m, russian: true).first { $0.kind == .llm }?.status, .ok, "облаку память Mac не мешает")
+    }
     check(check_(.models)?.detail.contains("transcriber") == false, "без внутренних имён")
     equal(check_(.disk)?.status, .failed, "1,5 ГБ — мало")
     check(check_(.disk)?.detail.contains("1,5\u{00A0}ГБ") == true, "размер по-русски")

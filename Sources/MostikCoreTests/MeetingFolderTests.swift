@@ -241,6 +241,18 @@ func runMeetingCalendarTests() {
     do {
         // Конспект Телемоста (2026-11-09): идёт свой — запись не предлагаем. Подписи кнопки из снимков дерева Телемоста 3.3.
         equal(TelemostSummary.isOn(title: nil, description: "Start the AI summary"), false)
+        let log = """
+        61116-110556.449 CONFERENCE_VIEW conference start; id:1
+        61116-110557.236 ConferenceViewController summarization state Running; success: true
+        61116-115658.732 CONFERENCE_VIEW conference end; id:1
+        61116-121636.227 CONFERENCE_VIEW conference start; id:2
+        """
+        equal(TelemostSummary.fromLog(Substring(log)), false, "новый звонок, конспекта ещё нет — прошлый не в счёт")
+        equal(TelemostSummary.fromLog(Substring(log + "\n61116-121637.262 ConferenceViewController summarization state Running; success: true")), true,
+              "конспект включил организатор — кнопка без подписи, журнал знает")
+        equal(TelemostSummary.fromLog(Substring(log + "\n61116-122000.000 ConferenceViewController summarization state TurnedOff; success: true")), false)
+        equal(TelemostSummary.fromLog(Substring(log + "\n61116-130000.000 CONFERENCE_VIEW conference end; id:2")), nil, "звонок кончился")
+        equal(TelemostSummary.fromLog(""), nil, "журнала нет")
         equal(TelemostSummary.isOn(title: "Summarizing...", description: "Stop creating summary"), true)
         equal(TelemostSummary.isOn(title: "Конспектирую…", description: nil), true, "подпись без описания")
         equal(TelemostSummary.isOn(title: nil, description: "Остановить конспект"), true)

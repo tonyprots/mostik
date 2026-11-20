@@ -44,7 +44,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from . import isolation
+from . import crash_report, isolation
 from . import polish as P
 
 ENGINE_DIR = Path(__file__).resolve().parent.parent
@@ -78,7 +78,7 @@ DEFAULT_MODEL = "gemma-4-e2b"
 
 
 def _log(text: str) -> None:
-    print(f"[mostik-llm] {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik-llm] {text}")
 
 
 # --- где что лежит -----------------------------------------------------------------
@@ -825,11 +825,15 @@ class LlmClient:
 class MlxStream(P.PolishStream):
     """Поток D3: инструкция уходит модели на `open`, куски — по мере готовности окон."""
 
-    def __init__(self, backend: "MlxBackend", request: P.PolishRequest, stream_id: str) -> None:
+    def __init__(self, backend: "MlxBackend", request: P.PolishRequest, stream_id: str,
+                 *, spawn: bool = True) -> None:
         super().__init__(backend, request)
         self.stream_id = stream_id
         self.system = P.stream_system_for(request)
-        self.opened = backend.client.ensure() and backend.client.send(
+        # `spawn=False` — модели речи ещё грузятся: процесс не поднимаем ради потока. Не запущен —
+        # поток не открыт, и `finish` уйдёт обычным `complete`, который сам поднимет процесс.
+        client = backend.client
+        self.opened = (client.ensure() if spawn else client.running()) and client.send(
             {"op": "open", "stream": stream_id, "system": self.system, "user_head": P.INPUT_OPEN + "\n"})
 
     def feed(self, chunk: str) -> None:
@@ -940,13 +944,13 @@ class MlxBackend(P.PolishBackend):
         self.client.hold(key)
         return lambda: self.client.release(key)
 
-    def open_stream(self, request: P.PolishRequest) -> P.PolishStream:
+    def open_stream(self, request: P.PolishRequest, *, spawn: bool = True) -> P.PolishStream:
         if not self.status()["available"]:
             return P.PolishStream(self, request)
         with self._lock:
             self._streams += 1
             stream_id = f"p{self._streams}"
-        return MlxStream(self, request, stream_id)
+        return MlxStream(self, request, stream_id, spawn=spawn)
 
     def sweep(self, now: float | None = None) -> bool:
         return self.client.sweep(now)

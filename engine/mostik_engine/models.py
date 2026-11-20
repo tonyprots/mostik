@@ -7,11 +7,11 @@ E2E (ru) в процессе, Whisper Turbo (en) — в отдельном пр�
 """
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from typing import Any
 
+from . import crash_report
 from . import paths  # noqa: F401 — кладёт transcriber в sys.path
 
 from audio_transcription import catalog  # noqa: E402
@@ -31,7 +31,7 @@ class ModelMissing(RuntimeError):
 
 def log(text: str) -> None:
     # Со временем: engine.log общий на сутки, и без него не понять, когда что шло.
-    print(f"[mostik {time.strftime('%H:%M:%S')}] {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik {time.strftime('%H:%M:%S')}] {text}")
 
 
 def is_cached(entry: catalog.ModelEntry) -> bool:

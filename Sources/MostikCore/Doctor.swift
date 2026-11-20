@@ -75,6 +75,8 @@ public struct DoctorFacts: Equatable, Sendable {
     public var crashReports = 0
     /// Автозапуск при входе; nil — не проверяли (строки нет).
     public var loginItem: LoginItemFacts?
+    /// Память Mac в ГБ, если её мало (`MemoryProfile.isLow`); nil — хватает или не проверяли.
+    public var lowMemoryGB: Int?
 
     public init() {}
 }
@@ -207,6 +209,12 @@ public enum Doctor {
         } else {
             let name = f.llmBackend == "claude" ? "Claude/Codex" : (f.llmBackend == "mlx" ? t("локальная модель", "local model") : f.llmBackend)
             switch f.llmAvailable {
+            case true? where f.llmBackend == "mlx" && f.lowMemoryGB != nil:
+                let gb = f.lowMemoryGB ?? 8
+                out.append(.init(kind: .llm, status: .warning,
+                                 detail: t("Локальной модели на Mac с \(gb) ГБ тесно рядом с распознаванием: диктовка и весь Mac тормозят. Лучше Claude/Codex или без причёсывания.",
+                                           "With \(gb) GB of memory the local model crowds speech recognition: dictation and the whole Mac slow down. Claude/Codex or no polishing works better."),
+                                 fix: .openPolish))
             case true?:
                 out.append(.init(kind: .llm, status: .ok, detail: t("Готов к работе: \(name).", "Ready: \(name).")))
             case false?:
@@ -344,6 +352,22 @@ public struct FailureGate: Sendable {
 
 /// Когда прогревать модель: через `delay` после запуска, пробуждения или разблокировки,
 /// но не чаще `minInterval` и не посреди записи или расшифровки.
+/// Мало ли памяти у Mac (8 ГБ и меньше). Там модели речи (GigaAM, Whisper) и локальная LLM вместе
+/// уводят систему в своп: на M1 с 8 ГБ основная модель грузилась 23 с вместо 1,5, тормозил весь Mac.
+/// Поэтому на таком Mac локальная LLM заранее не греется, а «Проверка» и Настройки об этом предупреждают.
+public enum MemoryProfile {
+    public static let lowLimit: UInt64 = 8 << 30
+
+    public static func isLow(_ bytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
+        bytes > 0 && bytes <= lowLimit
+    }
+
+    /// Память в ГБ для подписи, если её мало; nil — хватает.
+    public static func lowGigabytes(_ bytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int? {
+        isLow(bytes) ? Int((Double(bytes) / Double(1 << 30)).rounded()) : nil
+    }
+}
+
 public struct WarmupPolicy: Sendable {
     public var delay: Double
     public var minInterval: Double
@@ -370,8 +394,10 @@ public struct WarmupPolicy: Sendable {
     public func delay(afterSleep: Bool) -> Double { afterSleep ? 0 : delay }
 
     /// Какую локальную LLM прогреть вместе с моделью речи (шаг 1, п. 7): только MLX и только
-    /// если на нём причёсывание или встречи. `claude` — облако, греть нечего.
-    public static func polishBackendToWarm(_ settings: MostikSettings) -> String? {
-        settings.polish.effectiveBackend == .mlx || settings.meetingEffectiveBackend == .mlx ? PolishBackend.mlx.rawValue : nil
+    /// если на нём причёсывание или встречи. `claude` — облако, греть нечего. На Mac с малой памятью
+    /// (`MemoryProfile`) не греем вовсе: модель поднимется, только когда понадобится.
+    public static func polishBackendToWarm(_ settings: MostikSettings, lowMemory: Bool = MemoryProfile.isLow()) -> String? {
+        guard !lowMemory else { return nil }
+        return settings.polish.effectiveBackend == .mlx || settings.meetingEffectiveBackend == .mlx ? PolishBackend.mlx.rawValue : nil
     }
 }

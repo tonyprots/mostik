@@ -35,7 +35,10 @@ struct OnboardingModelStep: View {
             VStack(spacing: 0) {
                 option(.local, title: L("На этом Mac", "On this Mac") + (llm.map { " · " + ModelCatalog.size($0.size, russian: L10n.isRussian) } ?? ""),
                        hint: L("Ничего не уходит в сеть. Модель скачается, пока вы пробуете диктовку.",
-                               "Nothing leaves this Mac. The model downloads while you try a dictation."))
+                               "Nothing leaves this Mac. The model downloads while you try a dictation.")
+                           + (MemoryProfile.lowGigabytes().map { gb in
+                               L(" Но на Mac с \(gb) ГБ ей тесно рядом с распознаванием: диктовка будет тормозить.",
+                                 " But with \(gb) GB of memory it crowds speech recognition and dictation slows down.") } ?? ""))
                 Hairline()
                 option(.claude, title: L("Claude/Codex по подписке", "Claude/Codex on your subscription"),
                        hint: L("Нужен Claude Code или Codex на\u{00A0}этом Mac. Тексты диктовок и расшифровки встреч уходят в Anthropic или OpenAI, звук — никогда.",

@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import isolation
+from . import crash_report, isolation
 
 SAMPLE_RATE = 16_000
 VERIFIER_IDLE_S = 180.0
@@ -40,7 +40,7 @@ HOTWORDS_CHARS = 600
 
 
 def _log(text: str) -> None:
-    print(f"[mostik-verifier] {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik-verifier] {text}")
 
 
 # --- дочерний процесс -------------------------------------------------------

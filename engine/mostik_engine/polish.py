@@ -34,7 +34,6 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -85,7 +84,7 @@ _MARKUP = frame_tags("transcript", "dictation", "polished", *_CONTEXT_TAGS, sing
 
 
 def _log(text: str) -> None:
-    print(f"[mostik] {text}", file=sys.stderr, flush=True)
+    crash_report.stderr_line(f"[mostik] {text}")
 
 
 # --- промпт ----------------------------------------------------------------
