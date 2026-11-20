@@ -18,12 +18,20 @@ public enum WebCallSpeakers {
         public var label: String?
         /// `AXValue` у `AXStaticText`: видимый текст.
         public var value: String?
+        /// `AXIdentifier`: в нативном Qt-клиенте Телемоста — путь объектов вида
+        /// `…MainConferenceView.ControlPanelWidget.microphoneButton` (`TelemostDesktop`).
+        public var identifier: String?
+        /// `AXTitle` отдельно от `label`: у окна это название встречи.
+        public var title: String?
+        /// Высота в точках — только где она нужна разбору (блоки субтитров Meet), иначе nil.
+        public var height: Double?
         public var children: [Node]
         /// `AXURL` у `AXWebArea`: адрес страницы. nil — браузер его не отдал.
         public var url: String?
         public init(role: String, classes: [String] = [], label: String? = nil, value: String? = nil,
-                    children: [Node] = [], url: String? = nil) {
-            self.role = role; self.classes = classes; self.label = label; self.value = value; self.children = children
+                    identifier: String? = nil, title: String? = nil, children: [Node] = [], url: String? = nil) {
+            self.role = role; self.classes = classes; self.label = label; self.value = value
+            self.identifier = identifier; self.title = title; self.children = children
             self.url = url
         }
 

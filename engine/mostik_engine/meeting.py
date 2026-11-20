@@ -1110,8 +1110,11 @@ def _run_meeting(payload: dict[str, Any], emit: Emit, out_dir: Path, started: fl
     speaker_names = {f"{INTERLOCUTOR} 1": name} if name else {}
     # Имена из окна ВКС по времени (лента приложения) важнее календаря: они про конкретную метку.
     own = [item["name"] for item in attendees if item["self"]] + ([payload["owner"]] if payload.get("owner") else [])
-    named = speaker_timeline.names_for(out_dir, turns, own=own,
-                                       duration=max(mic_duration, system_duration)) if system_ok else {}
+    others_invited = [item["name"] for item in attendees if not item["self"]
+                      and not (payload.get("owner") and item["name"].casefold() == str(payload["owner"]).casefold())]
+    resolution = speaker_timeline.resolve(out_dir, turns, own=own, duration=max(mic_duration, system_duration),
+                                          attendees=others_invited) if system_ok else None
+    named = resolution.named if resolution else {}
     speaker_names.update({label: naming.name for label, naming in named.items()})
     turns = apply_speaker_names(turns, speaker_names)
     # Голосовой памяти нужны метки диаризации: без разделения по голосам её не трогаем.
@@ -1151,6 +1154,10 @@ def _run_meeting(payload: dict[str, Any], emit: Emit, out_dir: Path, started: fl
     if named:
         # Откуда имя у метки и насколько уверенно: правка в окне встречи по-прежнему главнее.
         document["speaker_timeline"] = {label: naming.to_dict() for label, naming in named.items()}
+    if resolution and resolution.hints:
+        # Кандидаты, которые не прошли сверку с календарём или спорят с лентой: имени не ставим,
+        # окно встречи может предложить их как «возможно, это …».
+        document["speaker_hints"] = resolution.hints
     if unavailable:
         # Окно встречи скажет «Разделение по голосам недоступно на этом Mac»; код — и в манифесте.
         document["diarization"] = {"available": False, "code": DIARIZATION_UNAVAILABLE}

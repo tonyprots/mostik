@@ -26,8 +26,15 @@ public enum ZoomSpeakers {
         public var myUnmuted: Bool?
         /// Своё имя, если уже узнано раньше (`SpeakerTimelineWriter` запоминает его, пока я в звонке один).
         public var myName: String?
-        public init(tiles: [Tile], myUnmuted: Bool? = nil, myName: String? = nil) {
+        /// Сколько людей в звонке по счётчику клиента, вместе со мной. Плиток бывает меньше:
+        /// Телемост имён в дереве не отдаёт, а галерея Zoom прячет лишних за прокруткой.
+        public var count: Int?
+        /// Название встречи из окна звонка — для сверки с календарём.
+        public var title: String?
+        public init(tiles: [Tile], myUnmuted: Bool? = nil, myName: String? = nil, count: Int? = nil,
+                    title: String? = nil) {
             self.tiles = tiles; self.myUnmuted = myUnmuted; self.myName = myName
+            self.count = count; self.title = title
         }
 
         /// Номер своей плитки: помеченная «(Me)», иначе единственная с моим именем, иначе
@@ -121,6 +128,8 @@ public enum ZoomSpeakers {
 /// `at` — часы встречи. `active` — собеседники с пометкой «говорит», `unmuted` — собеседники
 /// с включённым микрофоном (своя плитка уже убрана), `self` — своё имя, `present` — все плитки
 /// в окне: по ним движок называет единственного собеседника, когда пометок не хватило.
+/// Необязательные `count` (людей в звонке вместе со мной) и `title` (название встречи) пишутся,
+/// когда клиент их показывает: по `count` движок отличает разговор один на один от группы.
 public struct SpeakerTimelineWriter: Sendable {
     public static let fileName = "speaker-timeline.jsonl"
     /// Столько секунд подряд одна плитка с моим микрофоном — и это я: в звонке пока никого.
@@ -166,12 +175,16 @@ public struct SpeakerTimelineWriter: Sendable {
             "unmuted": snapshot.selfIndex == nil ? [] : others.filter { $0.unmuted == true }.map(\.name).sorted(),
             "present": Array(Set(snapshot.tiles.map(\.name))).sorted(),
             "self": own.sorted(),
+            "count": snapshot.count.map { [String($0)] } ?? [],
+            "title": snapshot.title.map { [$0] } ?? [],
         ]
         guard state != last else { return nil }
         last = state
-        let row: [String: Any] = ["at": (at * 100).rounded() / 100, "active": state["active"]!,
+        var row: [String: Any] = ["at": (at * 100).rounded() / 100, "active": state["active"]!,
                                   "unmuted": state["unmuted"]!, "present": state["present"]!,
                                   "self": state["self"]!, "source": source]
+        if let count = snapshot.count { row["count"] = count }
+        if let title = snapshot.title { row["title"] = title }
         guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else { return nil }
         return line

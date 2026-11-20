@@ -644,6 +644,9 @@ runMotionSpecTests()
 runHookCoalesceTests()
 runZoomSpeakersTests()  // имена говорящих из Zoom через Accessibility — ZoomSpeakersTests.swift
 runWebCallSpeakersTests()  // говорящие в Meet и Телемосте по дереву страницы — WebCallSpeakersTests.swift
+runTelemostDesktopTests()  // десктопный Телемост: Qt-дерево и qt.log — TelemostDesktopTests.swift
+runNamePlatesTests()  // плашки с именами и рамка говорящего по кадру — NamePlatesTests.swift
+runCallCaptionsTests()  // субтитры ВКС с именами — CallCaptionsTests.swift
 
 runExternalCalendarTests()  // внешний календарь-команда — ExternalCalendarTests.swift
 runCalendarICSTests()  // iCalendar и повторы для CalDAV — CalendarICSTests.swift

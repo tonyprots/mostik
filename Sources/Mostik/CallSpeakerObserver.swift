@@ -7,9 +7,10 @@ import MostikKit
 /// и дописывает смены в `speaker-timeline.jsonl` папки встречи (`docs/speaker-names-research.md`).
 /// Имена меткам диаризации ставит движок после расшифровки (`speaker_timeline.py`).
 ///
-/// Источник — приложение, которое держит микрофон: Zoom (подписи плиток), Телемост (десктоп — та же
-/// веб-страница во встроенном Chromium) и Meet или Телемост во вкладке Chromium-браузера (DOM-классы
-/// страницы, `WebCallSpeakers`). Safari, Firefox и прочие ВКС пока не читаются.
+/// Источник — приложение, которое держит микрофон: Zoom (подписи плиток), десктопный Телемост
+/// (нативное Qt-окно: счётчик участников, свой микрофон, название — `TelemostDesktop`, плюс журнал
+/// `qt.log`) и Meet или Телемост во вкладке Chromium-браузера (DOM-классы страницы, `WebCallSpeakers`).
+/// Safari, Firefox и прочие ВКС пока не читаются.
 ///
 /// Разрешение — то же Accessibility, что и для вставки текста; без него наблюдатель молчит.
 /// Дерево читается в своей очереди с таймаутом: зависшее приложение не держит главный поток.
@@ -29,16 +30,29 @@ final class CallSpeakerObserver {
     enum Target: Equatable, Sendable {
         case zoom(pid_t)
         case web(pid_t, WebCallSpeakers.Kind, window: String?)
+        /// Десктопный Телемост: Qt-окно звонка, не страница.
+        case telemostDesktop(pid_t)
+        /// Teams и Slack: говорящих в дереве не видно, только субтитры, если их включили.
+        case captions(pid_t, CallCaptions.Kind)
 
         var source: String {
             switch self {
             case .zoom: return "zoom"
             case .web(_, let kind, _): return kind.rawValue
+            case .telemostDesktop: return "telemost-desktop"
+            case .captions(_, let kind): return kind.rawValue
             }
         }
         var pid: pid_t {
             switch self {
-            case .zoom(let pid), .web(let pid, _, _): return pid
+            case .zoom(let pid), .web(let pid, _, _), .telemostDesktop(let pid), .captions(let pid, _): return pid
+            }
+        }
+        /// Дерево страницы строится только по просьбе: Chromium, Electron, WebView2.
+        var isWeb: Bool {
+            switch self {
+            case .web, .captions: return true
+            case .zoom, .telemostDesktop: return false
             }
         }
     }
@@ -53,10 +67,23 @@ final class CallSpeakerObserver {
     private let myName: String
     private var writers: [String: SpeakerTimelineWriter] = [:]
     private var saved: String?
-    /// Процессы, которым уже выставлен `AXManualAccessibility`: Chromium строит дерево страницы только по просьбе.
-    private var enabled = Set<pid_t>()
+    /// Когда процессу последний раз выставлялись флаги доступности (номер тика): Chromium строит дерево
+    /// страницы только по просьбе и не всегда с первой — просьбу повторяем раз в `enableRetryTicks`.
+    private var enabledAt: [pid_t: Int] = [:]
+    private static let enableRetryTicks = 20
+    /// Журнал десктопного Телемоста: докуда дочитан и что в нём о текущей встрече.
+    private var telemostLogOffset: UInt64?
+    private var telemostLog = TelemostLog.State()
+    /// Субтитры по источникам и файл `speaker-captions.jsonl`.
+    private var captionTrackers: [String: CaptionTracker] = [:]
+    private var captionHandle: FileHandle?
     /// Своё имя узнано на этой встрече — контроллер впишет его в Настройки, если поле пустое.
     var onLearnedName: (String) -> Void = { _ in }
+    /// Можно ли смотреть на кадры окна звонка (не режим «только текст»). Разрешение «Запись экрана»
+    /// проверяет `CallFrameSpeakers` сам. По умолчанию — нет.
+    var framesAllowed: () -> Bool = { false }
+    private let frames = CallFrameSpeakers()
+    private var lastCount: Int?
     private var handle: FileHandle?
     private var dump: AXTreeDump?
 
@@ -83,10 +110,18 @@ final class CallSpeakerObserver {
     func stop() {
         timer?.invalidate()
         timer = nil
+        // `AXEnhancedUserInterface` меняет поведение окон браузера (анимации, перетаскивание) — снимаем.
+        let pids = Array(enabledAt.keys)
+        enabledAt = [:]
+        queue.async { for pid in pids { Self.disableEnhancedAccessibility(pid: pid) } }
         // Конец записи закрывает последний отрезок: молчание с этой секунды.
         if let at = elapsed(), let source = target?.source { observe(ZoomSpeakers.Snapshot(tiles: []), source: source, at: at) }
+        for source in Array(captionTrackers.keys) { finishCaptions(source) }
         try? handle?.close()
         handle = nil
+        try? captionHandle?.close()
+        captionHandle = nil
+        frames.reset()
     }
 
     private func tick() {
@@ -114,26 +149,107 @@ final class CallSpeakerObserver {
             return
         }
         guard let target else { return }
+        let usesFrames = Self.usesFrames(target)
+        if usesFrames { frames.poll(allowed: framesAllowed(), count: lastCount, window: Self.frameWindow(target)) }
         var enable: pid_t? = nil
-        if case .web(let pid, _, _) = target, !enabled.contains(pid) {
-            enable = pid
-            enabled.insert(pid)
+        if target.isWeb, ticks - (enabledAt[target.pid] ?? -Self.enableRetryTicks) >= Self.enableRetryTicks {
+            enable = target.pid
+            enabledAt[target.pid] = ticks
         }
+        // Журнал Телемоста — раз в секунду: строки в нём появляются при событиях, не постоянно.
+        var logOffset: UInt64?? = nil
+        if case .telemostDesktop = target, ticks % 4 == 1 { logOffset = .some(telemostLogOffset) }
         busy = true
         let raw = AXTreeDump.enabled
         queue.async { [weak self] in
             if let enable { Self.enableWebAccessibility(pid: enable) }
-            let (snapshot, descriptions, origin) = Self.snapshot(target, keepRaw: raw)
+            let (snapshot, descriptions, captions, origin) = Self.snapshot(target, keepRaw: raw)
+            let log = logOffset.map { Self.readTelemostLog(from: $0) }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.busy = false
                     guard self.timer != nil, self.target == target else { return }
+                    if let log {
+                        self.telemostLogOffset = log.offset
+                        for event in log.events { self.telemostLog.apply(event) }
+                    }
+                    var snapshot = snapshot
+                    if case .telemostDesktop = target { self.fillFromTelemostLog(&snapshot) }
+                    if usesFrames {
+                        self.lastCount = snapshot.count
+                        snapshot = NamePlates.merge(snapshot, frame: self.frames.tiles)
+                    }
                     if raw { self.logRaw(descriptions, at: at) }
                     self.observe(snapshot, source: target.source, at: at, learnsName: origin != .unknown)
+                    self.observeCaptions(captions, source: target.source, at: at)
                 }
             }
         }
+    }
+
+    private func observeCaptions(_ captions: [CallCaptions.Caption]?, source: String, at: Double) {
+        guard captions != nil || captionTrackers[source] != nil else { return }
+        var tracker = captionTrackers[source] ?? CaptionTracker(source: source)
+        let lines = tracker.observe(captions, at: at)
+        captionTrackers[source] = tracker
+        lines.forEach(appendCaption)
+    }
+
+    private func finishCaptions(_ source: String) {
+        guard var tracker = captionTrackers[source] else { return }
+        tracker.finish().forEach(appendCaption)
+        captionTrackers[source] = tracker
+    }
+
+    private func appendCaption(_ line: String) {
+        if captionHandle == nil {
+            let url = folder.appendingPathComponent(CaptionTracker.fileName)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
+            captionHandle = try? FileHandle(forWritingTo: url)
+            _ = try? captionHandle?.seekToEnd()
+        }
+        try? captionHandle?.write(contentsOf: Data((line + "\n").utf8))
+    }
+
+    /// Кадры нужны тем, кто не отдаёт имён (Телемост) или не помечает говорящего (Zoom). Meet в браузере
+    /// помечает говорящего в дереве страницы сам.
+    /// Телемост в браузере — только когда известен заголовок окна со звонком: самое большое окно
+    /// браузера может показывать почту или документ, и имена с них попали бы в состав.
+    nonisolated static func usesFrames(_ target: Target) -> Bool {
+        switch target {
+        case .zoom, .telemostDesktop: return true
+        case .web(_, .telemost, let window): return window != nil
+        case .web, .captions: return false
+        }
+    }
+
+    /// Окно для снимка, если его надо искать по заголовку (браузер); иначе — окно приложения с микрофоном.
+    nonisolated static func frameWindow(_ target: Target) -> (pid: pid_t, title: String)? {
+        if case .web(let pid, _, let window?) = target { return (pid, window) }
+        return nil
+    }
+
+    /// Окно звонка свёрнуто или дерево не отдалось — число участников и название берём из журнала.
+    private func fillFromTelemostLog(_ snapshot: inout ZoomSpeakers.Snapshot) {
+        guard telemostLog.connected || telemostLog.count != nil else { return }
+        if snapshot.count == nil { snapshot.count = telemostLog.count }
+        if snapshot.title == nil { snapshot.title = telemostLog.meetingName }
+    }
+
+    /// Хвост `qt.log`. Первый раз — последние 256 КБ: встреча могла начаться до записи, и её название
+    /// и счётчик уже в журнале.
+    nonisolated static func readTelemostLog(from offset: UInt64?) -> (events: [TelemostLog.Event], offset: UInt64) {
+        let url = TelemostLog.defaultURL
+        let start: UInt64
+        if let offset { start = offset } else {
+            let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value ?? 0
+            start = size > 256 << 10 ? size - (256 << 10) : 0
+        }
+        // Начали с середины строки: первая «строка» — обрывок, разбор её просто не узнает.
+        return TelemostLog.tail(url, from: start)
     }
 
     /// `learnsName: false` — страница браузера, адрес которой не удалось сверить: своё имя с неё
@@ -155,6 +271,9 @@ final class CallSpeakerObserver {
     private func retarget(to next: Target?) {
         guard next != target else { return }
         if let old = target, let at = elapsed() { observe(ZoomSpeakers.Snapshot(tiles: []), source: old.source, at: at) }
+        if let old = target { finishCaptions(old.source) }
+        frames.reset()  // плашки прежнего окна к новому не относятся
+        lastCount = nil
         target = next
     }
 
@@ -169,7 +288,12 @@ final class CallSpeakerObserver {
         }
         if bundle.hasPrefix(telemostBundleID),
            let app = NSRunningApplication.runningApplications(withBundleIdentifier: telemostBundleID).first {
-            return .web(app.processIdentifier, .telemost, window: nil)
+            return .telemostDesktop(app.processIdentifier)
+        }
+        for (prefix, kind) in captionApps where bundle.hasPrefix(prefix) {
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: prefix).first {
+                return .captions(app.processIdentifier, kind)
+            }
         }
         guard chromiumBrowsers.contains(where: bundle.hasPrefix) else { return nil }
         let owner = NSWorkspace.shared.runningApplications
@@ -185,19 +309,32 @@ final class CallSpeakerObserver {
         return nil
     }
 
-    nonisolated static let telemostBundleID = "ru.yandex.desktop.telemost"
+    nonisolated static let telemostBundleID = TelemostDesktop.bundleID
+    /// Приложения, где читаем только субтитры: новый Teams (WebView2) и Slack (Electron, созвоны huddle).
+    nonisolated static let captionApps: [(String, CallCaptions.Kind)] = [
+        ("com.microsoft.teams2", .teams), ("com.tinyspeck.slackmacgap", .slack),
+    ]
     /// Браузеры на Chromium: у них страница видна в Accessibility с DOM-классами. Safari и Firefox — нет.
     nonisolated static let chromiumBrowsers = [
         "com.google.Chrome", "com.google.Chrome.beta", "ru.yandex.desktop.yandex-browser", "company.thebrowser.Browser",
         "com.microsoft.edgemac", "com.brave.Browser", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
     ]
 
-    /// Просьба к Chromium (и QtWebEngine) построить дерево веб-страницы. Телемосту одного флага может
-    /// не хватить — тогда его запускают с `QTWEBENGINE_CHROMIUM_FLAGS=--force-renderer-accessibility`.
+    /// Просьба к Chromium построить дерево веб-страницы. `AXManualAccessibility` понимают Chrome и Electron;
+    /// Яндекс Браузер на одном нём отдаёт пустую область страницы (снято 2026-10-23), ему и WebView2
+    /// нужен ещё `AXEnhancedUserInterface` — тот же флаг, что ставит VoiceOver. Коды ответа не смотрим:
+    /// флаг, который приложение не знает, просто не действует.
     nonisolated static func enableWebAccessibility(pid: pid_t) {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+
+    nonisolated static func disableEnhancedAccessibility(pid: pid_t) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
     }
 
     /// Только с `axDump`: сырые подписи плиток и кнопки микрофона при каждой смене — `ax-tiles.jsonl`.
@@ -230,14 +367,15 @@ final class CallSpeakerObserver {
         try? handle?.write(contentsOf: Data((line + "\n").utf8))
     }
 
-    /// Третье значение — чья страница (`WebCallSpeakers.Origin`); у Zoom и клиента Телемоста — `.verified`:
-    /// их узнают по bundle id, а не по заголовку.
+    /// Снимок цели: плитки, сырые подписи (только с `axDump`), субтитры (nil — их нет в дереве) и чья
+    /// страница (`WebCallSpeakers.Origin`); у Zoom и клиента Телемоста — `.verified`: их узнают по bundle id,
+    /// а не по заголовку.
     nonisolated static func snapshot(_ target: Target, keepRaw: Bool = false)
-        -> (ZoomSpeakers.Snapshot, [String], WebCallSpeakers.Origin) {
+        -> (ZoomSpeakers.Snapshot, [String], [CallCaptions.Caption]?, WebCallSpeakers.Origin) {
         switch target {
         case .zoom(let pid):
-            let (snapshot, raw) = zoomSnapshot(pid: pid, keepRaw: keepRaw)
-            return (snapshot, raw, .verified)
+            let (snapshot, raw, captions) = zoomSnapshot(pid: pid, keepRaw: keepRaw)
+            return (snapshot, raw, captions, .verified)
         case .web(let pid, let kind, let window):
             var origin = WebCallSpeakers.Origin.verified
             var tree = webTree(pid: pid, window: window)
@@ -250,12 +388,22 @@ final class CallSpeakerObserver {
             }
             let snapshot = tree.map { WebCallSpeakers.snapshot($0, kind: kind) } ?? ZoomSpeakers.Snapshot(tiles: [])
             let raw = keepRaw ? snapshot.tiles.map { "\($0.name)\($0.active ? " [active]" : "")\($0.isSelf ? " [self]" : "")" } : []
-            return (snapshot, raw, origin)
+            let captions = kind == .meet ? tree.flatMap { CallCaptions.captions($0, kind: .meet) } : nil
+            return (snapshot, raw, captions, origin)
+        case .captions(let pid, let kind):
+            let captions = webTree(pid: pid, window: nil).flatMap { CallCaptions.captions($0, kind: kind) }
+            return (ZoomSpeakers.Snapshot(tiles: []), keepRaw ? (captions ?? []).map { "\($0.name): \($0.text)" } : [], captions, .verified)
+        case .telemostDesktop(let pid):
+            let snapshot = qtTree(pid: pid).flatMap(TelemostDesktop.snapshot) ?? ZoomSpeakers.Snapshot(tiles: [])
+            let raw = keepRaw ? ["count=\(snapshot.count.map(String.init) ?? "?")"]
+                + snapshot.tiles.map { "\($0.name)\($0.isSelf ? " [self]" : "")" } : []
+            return (snapshot, raw, nil, .verified)
         }
     }
 
     /// Плитки участников во всех окнах Zoom и кнопка своего микрофона: обход в ширину.
-    nonisolated static func zoomSnapshot(pid: pid_t, keepRaw: Bool = false) -> (ZoomSpeakers.Snapshot, [String]) {
+    nonisolated static func zoomSnapshot(pid: pid_t, keepRaw: Bool = false)
+        -> (ZoomSpeakers.Snapshot, [String], [CallCaptions.Caption]?) {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)
         var queue: [(AXUIElement, Int)] = AX.children(app).map { ($0, 0) }
@@ -263,10 +411,16 @@ final class CallSpeakerObserver {
         var tiles: [ZoomSpeakers.Tile] = []
         var mine: Bool? = nil
         var raw: [String] = []
+        var captions: [CallCaptions.Caption]? = nil
         while !queue.isEmpty, seen < maxNodes {
             let (element, depth) = queue.removeFirst()
             seen += 1
             if let description = AX.string(element, kAXDescriptionAttribute) {
+                if description == CallCaptions.zoomContainer {
+                    // Субтитры: строки внутри контейнера глубже обычного предела — читаем отдельно.
+                    captions = CallCaptions.zoom(rows: zoomCaptionRows(element))
+                    continue
+                }
                 if let tile = ZoomSpeakers.tile(from: description) {
                     tiles.append(tile)
                     if keepRaw { raw.append(description) }
@@ -277,7 +431,64 @@ final class CallSpeakerObserver {
             }
             if depth < maxDepth { queue.append(contentsOf: AX.children(element).map { ($0, depth + 1) }) }
         }
-        return (ZoomSpeakers.Snapshot(tiles: tiles, myUnmuted: mine), raw)
+        return (ZoomSpeakers.Snapshot(tiles: tiles, myUnmuted: mine), raw, captions)
+    }
+
+    /// Строки субтитров Zoom: каждая `AXRow` — тексты её ячеек по порядку [говорящий, текст…].
+    nonisolated static func zoomCaptionRows(_ container: AXUIElement) -> [[String]] {
+        var rows: [[String]] = []
+        var budget = 400
+        func texts(_ element: AXUIElement, _ depth: Int) -> [String] {
+            budget -= 1
+            guard budget > 0 else { return [] }
+            if AX.string(element, kAXRoleAttribute) == (kAXStaticTextRole as String) {
+                return [AX.string(element, kAXValueAttribute) ?? AX.string(element, kAXDescriptionAttribute)].compactMap { $0 }
+            }
+            guard depth < 6 else { return [] }
+            return AX.children(element).flatMap { texts($0, depth + 1) }
+        }
+        func walk(_ element: AXUIElement, _ depth: Int) {
+            guard budget > 0, depth < 6 else { return }
+            for child in AX.children(element) {
+                if AX.string(child, kAXRoleAttribute) == (kAXRowRole as String) {
+                    rows.append(texts(child, 0))
+                } else {
+                    walk(child, depth + 1)
+                }
+            }
+        }
+        walk(container, 0)
+        return rows
+    }
+
+    /// Qt-дерево окон десктопного Телемоста для `TelemostDesktop`: роль, `AXIdentifier`, подписи, текст.
+    /// Оно маленькое (окно звонка — пара десятков элементов), но окно мессенджера рядом — веб-страница
+    /// на тысячи узлов: его не обходим.
+    nonisolated static let qtMaxDepth = 14
+    nonisolated static let qtMaxNodes = 1500
+    nonisolated static func qtTree(pid: pid_t) -> WebCallSpeakers.Node? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        let windows = AX.windows(app)
+        guard !windows.isEmpty else { return nil }
+        var count = 0
+        func node(_ element: AXUIElement, _ depth: Int) -> WebCallSpeakers.Node {
+            count += 1
+            let role = AX.string(element, kAXRoleAttribute) ?? "?"
+            let identifier = AX.string(element, kAXIdentifierAttribute)
+            var result = WebCallSpeakers.Node(role: role, identifier: identifier)
+            if role == "AXStaticText" { result.value = AX.string(element, kAXValueAttribute) }
+            result.title = AX.string(element, kAXTitleAttribute)
+            result.label = AX.string(element, kAXDescriptionAttribute) ?? result.title
+            guard depth < qtMaxDepth, role != (kAXMenuBarRole as String),
+                  identifier?.contains("Messenger::") != true else { return result }
+            for child in AX.children(element) {
+                guard count < qtMaxNodes else { break }
+                result.children.append(node(child, depth + 1))
+            }
+            return result
+        }
+        return WebCallSpeakers.Node(role: "AXApplication", children: windows.map { node($0, 1) })
     }
 
     /// Дерево окон приложения (или одного окна браузера по заголовку) для `WebCallSpeakers`.
@@ -290,10 +501,12 @@ final class CallSpeakerObserver {
         }
         guard !windows.isEmpty else { return nil }
         var count = 0
-        func node(_ element: AXUIElement, _ depth: Int) -> WebCallSpeakers.Node {
+        func node(_ element: AXUIElement, _ depth: Int, measure: Bool = false, inPage: Bool = false) -> WebCallSpeakers.Node {
             count += 1
             let role = AX.string(element, kAXRoleAttribute) ?? "?"
             var result = WebCallSpeakers.Node(role: role)
+            // Блоки субтитров Meet различаются только кеглем: высота нужна, чтобы найти имена.
+            if measure { result.height = AX.frame(element).map { Double($0.height) } }
             if role == "AXStaticText" {
                 result.value = AX.string(element, kAXValueAttribute)
                 return result
@@ -308,10 +521,16 @@ final class CallSpeakerObserver {
             if ["AXList", "AXGroup", "AXRow", "AXCell"].contains(role) {
                 result.label = AX.string(element, kAXDescriptionAttribute) ?? AX.string(element, kAXTitleAttribute)
             }
-            guard depth < webMaxDepth else { return result }
+            // Полоса вкладок и панели браузера — не страница: на сотнях вкладок обход кончался на них.
+            // Внутри страницы не режем ничего: её вкладки (ARIA tablist) — тоже AXTabGroup.
+            // Классы и подпись уже прочитаны там, где они бывают у панелей браузера, — второй раз не спрашиваем.
+            guard depth < webMaxDepth, inPage || !skippedChrome(role: role, classes: result.classes, label: result.label)
+            else { return result }
+            let captions = result.label == "Captions"
+            let page = inPage || role == "AXWebArea"
             for child in AX.children(element) {
                 guard count < webMaxNodes else { break }
-                result.children.append(node(child, depth + 1))
+                result.children.append(node(child, depth + 1, measure: captions, inPage: page))
             }
             return result
         }
@@ -369,6 +588,13 @@ enum TelemostSummaryProbe {
         }
         return nil
     }
+}
+
+/// Части окна браузера вокруг страницы: строка меню, панели инструментов и полоса вкладок.
+nonisolated func skippedChrome(role: String, classes: [String]?, label: String?) -> Bool {
+    if role == (kAXMenuBarRole as String) || role == (kAXToolbarRole as String) || role == (kAXTabGroupRole as String) { return true }
+    if let classes, classes.contains(where: { $0.hasPrefix("Tabs") || $0 == "TabStrip" || $0 == "BookmarkBarView" }) { return true }
+    return label == "Tabs"
 }
 
 /// Свои имена в Zoom между встречами: последние несколько, новое — первым.
@@ -467,14 +693,21 @@ final class AXTreeDump {
         }
         let bundle = CallSpeakerObserver.telemostBundleID
         if let telemost = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
-            result.append(("telemost", .web(telemost.processIdentifier, .telemost, window: nil)))
+            result.append(("telemost", .telemostDesktop(telemost.processIdentifier)))
+        }
+        for (bundle, kind) in CallSpeakerObserver.captionApps {
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
+                result.append((kind.rawValue, .captions(app.processIdentifier, kind)))
+            }
         }
         for browser in CallSpeakerObserver.chromiumBrowsers {
             for app in NSRunningApplication.runningApplications(withBundleIdentifier: browser) {
                 let pid = app.processIdentifier
-                CallSpeakerObserver.enableWebAccessibility(pid: pid)
+                // Заголовки окон видны и так; `AXEnhancedUserInterface` ставим только окну со звонком
+                // (и снимаем после снимка) — браузер без звонка не трогаем.
                 let element = AXUIElementCreateApplication(pid)
                 AXUIElementSetMessagingTimeout(element, 0.5)
+                AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
                 for window in AX.windows(element) {
                     guard let title = AX.string(window, kAXTitleAttribute),
                           let kind = WebCallSpeakers.kind(windowTitle: title) else { continue }
@@ -492,7 +725,7 @@ final class AXTreeDump {
         let folder = folder
         DispatchQueue.global(qos: .utility).async {
             for (tag, target) in Self.targets() {
-                if case .web(let pid, _, _) = target { CallSpeakerObserver.enableWebAccessibility(pid: pid) }
+                if target.isWeb { CallSpeakerObserver.enableWebAccessibility(pid: target.pid) }
                 var window: String? = nil
                 if case .web(_, _, let title) = target { window = title }
                 var text = Self.render(pid: target.pid, window: window)
@@ -506,6 +739,7 @@ final class AXTreeDump {
                 }
                 let me = snapshot.myUnmuted.map { $0 ? "unmuted" : "muted" } ?? "?"
                 text = "# tiles (\(ms) ms, me \(me)): \(found.joined(separator: "; "))\n" + text
+                if target.isWeb { CallSpeakerObserver.disableEnhancedAccessibility(pid: target.pid) }
                 let url = folder.appendingPathComponent("ax-dump-\(tag)-\(Int(at)).txt")
                 FileManager.default.createFile(atPath: url.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
             }
@@ -522,7 +756,7 @@ final class AXTreeDump {
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         var lines: [String] = ["# pid \(pid), \(Date())" + (window.map { ", window \"\($0)\"" } ?? "")]
         var count = 0
-        func walk(_ element: AXUIElement, _ depth: Int) {
+        func walk(_ element: AXUIElement, _ depth: Int, inPage: Bool = false) {
             guard count < maxNodes else { return }
             count += 1
             var parts = [AX.string(element, kAXRoleAttribute) ?? "?"]
@@ -534,7 +768,8 @@ final class AXTreeDump {
                     parts.append("\(key)=\"\(String(text.prefix(160)).replacingOccurrences(of: "\n", with: " "))\"")
                 }
             }
-            if let classes = AX.value(element, "AXDOMClassList") as? [String], !classes.isEmpty {
+            let classes = AX.value(element, "AXDOMClassList") as? [String]
+            if let classes, !classes.isEmpty {
                 parts.append("class=\"\(classes.prefix(12).joined(separator: " "))\"")
             }
             if let frame = AX.frame(element) {
@@ -542,8 +777,12 @@ final class AXTreeDump {
             }
             lines.append(String(repeating: "  ", count: depth) + parts.joined(separator: " "))
             // Строку меню не обходим: там «Недавние объекты» с именами файлов, а про звонок ничего.
-            if depth < maxDepth, AX.string(element, kAXRoleAttribute) != (kAXMenuBarRole as String) {
-                for child in AX.children(element) { walk(child, depth + 1) }
+            // Полосу вкладок браузера тоже: 900 вкладок съедали весь запас узлов до страницы.
+            // Внутри страницы не режем: её собственные вкладки — тоже AXTabGroup.
+            let role = parts[0]
+            if depth < maxDepth, inPage || !skippedChrome(role: role, classes: classes,
+                                                          label: AX.string(element, kAXDescriptionAttribute)) {
+                for child in AX.children(element) { walk(child, depth + 1, inPage: inPage || role == "AXWebArea") }
             }
         }
         if let window {

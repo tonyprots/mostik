@@ -3,6 +3,15 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 English summary follows each release.
 
+## 0.1.6 — 2026-11-20
+
+### Встречи: имена собеседников
+- Mostik подписывает собеседников по окну звонка: в десктопном Телемосте, по плашкам с именами на кадре, по субтитрам Zoom, Google Meet, Microsoft Teams и Slack. Учитывается и число участников.
+- На встрече один на один имя берётся из календаря или из названия встречи. Mostik понимает названия вида «Тема / Имя», «Имя: тема», «Имя-Имя», с эмодзи и пометками в скобках.
+- Имена по разговору: перед сводкой Mostik находит обращения по имени и самопредставления. Модель предлагает, кто есть кто, а Mostik проверяет ответ: имя должно быть среди приглашённых и звучать в разговоре дословно. Уверенные имена подставляются сразу, остальные приходят подсказкой «Это он / Не он». Если шаг не сработал, сводка всё равно готовится.
+
+English: Mostik now names meeting participants from the call window (desktop Telemost, name plates on screen, Zoom, Google Meet, Microsoft Teams and Slack captions, participant count); in one-on-one meetings from the calendar or the meeting title; and from the conversation itself — greetings and introductions are matched against invitees and verified against the transcript. Confident names are applied, the rest are offered as suggestions. If this step fails, the summary is still produced.
+
 ## 0.1.5 — 2026-11-20
 
 ### Диктовка

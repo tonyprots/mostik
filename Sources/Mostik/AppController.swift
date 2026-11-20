@@ -2017,6 +2017,8 @@ final class AppController {
             settings.myName = name
             self.applySettings(settings)
         }
+        // Кадры окна звонка — для имён на плашках Телемоста и рамки говорящего; в «только тексте» — нет.
+        observer.framesAllowed = { [weak self] in self.map { !$0.model.meetingLive.textOnly } ?? false }
         observer.start()
         speakerObserver = observer
         let eventTitle = meetingEvent?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

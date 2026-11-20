@@ -1533,12 +1533,15 @@ def run_meeting_ai(payload: dict[str, Any], backends: dict[str, Any], emit: Emit
     if not (folder / "transcript.json").is_file():
         raise FileNotFoundError(f"нет расшифровки: {folder / 'transcript.json'}")
     privacy.check_meeting(folder, backend_name)
-    transcript = load_transcript(folder, payload.get("language"))
     model = getattr(backend, "model", None)
     if isinstance(backend, polish_mod.ClaudeCliBackend):
         model = payload.get("model") or MEETING_MODEL
         backend = backend.with_model(model)
     timeout = float(payload.get("timeout_s") or CALL_TIMEOUT_S)
+    names = None
+    if not payload.get("variant") and not payload.get("instruction") and payload.get("names", True) is not False:
+        names = name_speakers(folder, backend, backend_name, model, payload, timeout)
+    transcript = load_transcript(folder, payload.get("language"))
 
     variant = str(payload.get("variant") or "").strip().lower() or None
     instruction = " ".join(str(payload.get("instruction") or "").split())[:MAX_INSTRUCTION] or None
@@ -1596,7 +1599,26 @@ def run_meeting_ai(payload: dict[str, Any], backends: dict[str, Any], emit: Emit
         "repairs": outcome.repairs + outcome.llm_repairs,
         "coverage": outcome.coverage,
         "seconds": round(outcome.seconds, 2),
+        "names": names,
     }
+
+
+def name_speakers(folder: Path, backend: Any, backend_name: str, model: str | None, payload: dict[str, Any],
+                  timeout: float) -> dict[str, Any] | None:
+    """Имена по разговору до сводки (speaker_context). Сбой — не сбой сводки: вернётся None."""
+    from . import speaker_context
+
+    caller = Caller(backend, str(payload.get("language") or "ru"), timeout=max(5.0, min(timeout, 180.0)),
+                    guard=lambda: privacy.check_meeting(folder, backend_name))
+    try:
+        block = speaker_context.identify(folder, caller, model=model, force=bool(payload.get("names_force")))
+    except privacy.SensitiveMeeting:
+        raise
+    except Exception as error:  # noqa: BLE001 — имена необязательны, сводка важнее
+        return {"applied": 0, "suggested": 0, "calls": caller.calls, "error": error.__class__.__name__}
+    if block is None:
+        return None
+    return {"applied": len(block["applied"]), "suggested": len(block["suggested"]), "calls": caller.calls}
 
 
 def _update_notes_meta(path: Path, variant: str | None, *, auto: bool, template: str | None = None) -> None:
