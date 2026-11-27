@@ -10,6 +10,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <language>ru</language>
         <!-- items -->
         <item>
+            <title>Mostik 0.1.7</title>
+            <pubDate>Fri, 27 Nov 2026 22:59:47 GMT</pubDate>
+            <sparkle:version>438</sparkle:version>
+            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <mostik:designatedRequirement>designated =&gt; identifier "app.mostik.mac" and certificate leaf = H"bb63a4c6a7b9af545dd12faeebd7b979dbd7c864"</mostik:designatedRequirement>
+            <enclosure url="https://github.com/tonyprots/mostik/releases/download/v0.1.7/Mostik-0.1.7.dmg" length="196161684" type="application/octet-stream" sparkle:edSignature="m8toL1asMb0I5+CZ0MhMjSEmv2L6G0l9185cNXJPvCiE9PKl6K1Sou2H3TGTKzNkaQBCtFHFdgDaPyCqoYfcDw==" />
+        </item>
+        <item>
             <title>Mostik 0.1.6</title>
             <pubDate>Fri, 20 Nov 2026 10:44:36 GMT</pubDate>
             <sparkle:version>435</sparkle:version>
@@ -39,6 +48,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: xb0Q+OHXwt9RfLYyenXD8BcZdOzwrpR42z6GhurCwgLNm8Uac257gqkZi9XM/Lt1XJ1pkv15yqN2gfZv8tHoCA==
-length: 3548
+edSignature: dvhfZuT8zmVSuu3UqZkddLDVXYyMw3E1mJc2RRgx1hANEc/8q06XZ70M9b3X5ioOp4Phwe60h7W1CcqVD+bUDw==
+length: 4341
 -->
