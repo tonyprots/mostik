@@ -47,6 +47,8 @@ def _log(text: str) -> None:
 
 
 WORKER_MODELS = ("whisper", "parakeet")
+# Порог повторов, который MLX Whisper использует при выборе следующей попытки.
+WHISPER_COMPRESSION_LIMIT = 2.4
 
 
 class _Parakeet:
@@ -106,6 +108,13 @@ def _hotwords(words: list[str] | None) -> list[str] | None:
     return pick_terms(words, limit=HOTWORDS_LIMIT, chars=HOTWORDS_CHARS) or None
 
 
+def _whisper_repeats(answer: Any) -> bool:
+    return any(
+        segment.get("compression_ratio", 0.0) > WHISPER_COMPRESSION_LIMIT
+        for segment in getattr(answer, "segments", ())
+    )
+
+
 def _transcribe(model: Any, request: dict, *, hint: str = "phrase") -> dict:
     """Окно → текст. `hint="phrase"` (L4): громкость до −0,1 dBFS и подсказка «фраза-образец +
     термины»; `"legacy"` — как до L4, только термины через `hotwords` (для стенда)."""
@@ -120,10 +129,8 @@ def _transcribe(model: Any, request: dict, *, hint: str = "phrase") -> dict:
 
         audio = peak_normalize(audio)
         prompt_kwargs = {"initial_prompt": build_prompt(language, request.get("hotwords"))}
-    answer = model.generate(
-        audio,
+    decode_options = dict(
         language=language,
-        **prompt_kwargs,
         word_timestamps=False,
         condition_on_previous_text=False,
         # Без повторов с температурой 0,2…1,0: на коротком окне они
@@ -131,6 +138,13 @@ def _transcribe(model: Any, request: dict, *, hint: str = "phrase") -> dict:
         temperature=0.0,
         verbose=None,
     )
+    answer = model.generate(audio, **decode_options, **prompt_kwargs)
+    if language == "en" and "initial_prompt" in prompt_kwargs and _whisper_repeats(answer):
+        # На коротком окне Whisper может зациклиться на словах подсказки.
+        # Повторяем то же аудио без неё один раз, сохраняя остальные окна.
+        answer = model.generate(audio, **decode_options)
+        if _whisper_repeats(answer):
+            answer = None
     text = str(getattr(answer, "text", "") or "").strip()
     if "initial_prompt" in prompt_kwargs:
         from .whisper_hint import is_prompt_echo

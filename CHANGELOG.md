@@ -3,6 +3,15 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 English summary follows each release.
 
+## 0.1.7 — 2026-11-28
+
+### Диктовка
+
+- Исправлен сбой английской диктовки, при котором Whisper повторял одну фразу. При обнаружении повтора приложение заново распознаёт этот фрагмент без текстовой подсказки.
+- Словарные замены точнее обрабатывают обычные слова и убирают повтор части названия, которая уже есть рядом.
+
+English: fixed a Whisper loop that could repeat a phrase in English dictation. Mostik retries the affected audio without a prompt. Glossary replacements better preserve ordinary words and avoid duplicating a part of a name already present in the text.
+
 ## 0.1.6 — 2026-11-20
 
 ### Встречи: имена собеседников

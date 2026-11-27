@@ -1,6 +1,8 @@
 """L4: подсказка Whisper «фраза + термины» и пиковая нормализация."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
 from mostik_engine import verifier_worker
@@ -74,3 +76,42 @@ def test_worker_legacy_hint_for_bench():
     peak, kwargs = model.calls[0]
     assert peak < 0.06
     assert kwargs["hotwords"] == ["Mostik"]
+
+
+class _WhisperReplies:
+    def __init__(self, *answers):
+        self.answers = iter(answers)
+        self.calls = []
+
+    def generate(self, audio, **kwargs):
+        self.calls.append((audio, kwargs))
+        text, ratio = next(self.answers)
+        return SimpleNamespace(text=text, segments=[{"compression_ratio": ratio}])
+
+
+def test_english_whisper_retries_repetitive_window_without_prompt():
+    model = _WhisperReplies(("Repeated many times. " * 16, 8.38), ("Actual speech.", 0.9))
+    request = {**_request(), "language": "en"}
+
+    assert verifier_worker._transcribe(model, request)["text"] == "Actual speech."
+    first, retry = model.calls
+    assert first[0] is retry[0]
+    assert first[1]["initial_prompt"]
+    assert "initial_prompt" not in retry[1]
+    assert "hotwords" not in retry[1]
+    assert retry[1]["temperature"] == first[1]["temperature"] == 0.0
+
+
+def test_english_whisper_does_not_return_second_repetitive_decode():
+    model = _WhisperReplies(("First loop. " * 16, 8.38), ("Second loop. " * 16, 9.1))
+
+    assert verifier_worker._transcribe(model, {**_request(), "language": "en"})["text"] == ""
+    assert len(model.calls) == 2
+
+
+def test_whisper_keeps_normal_english_and_russian_decode():
+    for language, ratio in (("en", 1.7), ("ru", 8.38)):
+        model = _WhisperReplies(("Yes, yes.", ratio))
+
+        assert verifier_worker._transcribe(model, {**_request(), "language": language})["text"] == "Yes, yes."
+        assert len(model.calls) == 1

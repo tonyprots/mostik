@@ -37,10 +37,11 @@ def test_longer_overlapping_beats_shorter():
 
 
 def test_output_does_not_feed_another_rule():
-    entries = [rule("бэ", "а"), rule("вэ", "бэ")]
-    text, fixes = apply_text("а бэ", entries)
+    # «а» — обычное слово и само не заменяется, поэтому правило с выдуманным «ыа».
+    entries = [rule("бэ", "ыа"), rule("вэ", "бэ")]
+    text, fixes = apply_text("ыа бэ", entries)
     assert text == "бэ вэ"
-    assert fixes == [("а", "бэ"), ("бэ", "вэ")]
+    assert fixes == [("ыа", "бэ"), ("бэ", "вэ")]
 
 
 def test_case_insensitive_unless_marked():
@@ -63,3 +64,26 @@ def test_segments_and_audit():
     segments, audit = apply_rules([Segment(0.0, 1.0, "клод пишет")], [rule("Claude", "клод")])
     assert segments[0].text == "Claude пишет"
     assert [(c.before, c.after, c.rule) for c in audit] == [("клод", "Claude", "exact_alias")]
+
+
+def test_common_word_alias_is_not_replaced():
+    """«код» — обычное слово: «вайб-код» не становится «вайб-Claude». Фраза из слов — работает."""
+    entries = [rule("Claude", "клод", "код"), rule("End", "and"), rule("Claude Code", "клод код")]
+    assert apply_text("пишем вайб-код и код ревью", entries) == ("пишем вайб-код и код ревью", [])
+    assert apply_text("rock and roll", entries)[0] == "rock and roll"
+    assert apply_text("спроси клод код", entries)[0] == "спроси Claude Code"
+    assert apply_text("спроси клод", entries)[0] == "спроси Claude"
+
+
+def test_common_word_case_fix_still_applies():
+    assert apply_text("код", [rule("Код", "код", case_sensitive=True)])[0] == "Код"
+
+
+def test_canonical_tail_already_following_is_absorbed():
+    """«Romashka 24» → «Ромашка24», а не «Ромашка24 24»; без хвоста — как раньше."""
+    entries = [rule("Ромашка24", "Romashka", "Ромашка", "Ромашки")]
+    text, fixes = apply_text("у Romashka 24 и Ромашка-24, а у Ромашки свой", entries)
+    assert text == "у Ромашка24 и Ромашка24, а у Ромашка24 свой"
+    assert fixes == [("Romashka 24", "Ромашка24"), ("Ромашка-24", "Ромашка24"), ("Ромашки", "Ромашка24")]
+    assert apply_text("Ромашка 240 рублей", entries)[0] == "Ромашка24 240 рублей"
+    assert apply_text("в Сфера 360", [rule("Сфера 360", "сфера")])[0] == "в Сфера 360"

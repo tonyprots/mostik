@@ -8,7 +8,10 @@
 - один проход по исходному тексту: вывод правила не питает другое правило, поэтому
   цепочки «a → b, b → c» не бывает, а «c» в тексте после замены не правится повторно;
 - регистр не важен, если у записи нет `case_sensitive`;
-- место, где уже стоит канон, правкой не считается.
+- место, где уже стоит канон, правкой не считается;
+- обычное слово языка (`wordlists.is_natural_word`: «код», «and») само по себе не заменяется:
+  «вайб-код» не станет «вайб-Claude», а «and» — «End»; правило из нескольких слов работает;
+- хвост канона, который уже стоит следом, поглощается: «Romashka 24» → «Ромашка24», а не «Ромашка24 24».
 
 Формат записей — `GlossaryEntry` transcriber: `canonical` и `aliases` (это и есть
 колонка «что модель пишет вместо»), автозамена — только у `auto_apply`.
@@ -23,9 +26,29 @@ from . import paths  # noqa: F401 — кладёт transcriber в sys.path
 from audio_transcription.glossary import Correction, GlossaryEntry  # noqa: E402
 from audio_transcription.models import Segment  # noqa: E402
 
+from .wordlists import is_natural_word  # noqa: E402
+
+# Последний кусок канона — цифры или буквы: «24» у «Ромашка24», «360» у «Сфера 360».
+_TAIL = re.compile(r"(\d+|[^\W\d_]+)$")
+
 
 def _pattern(alias: str) -> str:
     return rf"(?<![\w]){re.escape(alias)}(?![\w])"
+
+
+def _common_word(alias: str, canonical: str) -> bool:
+    """Одно обычное слово языка: заменять его везде — портить речь. Правка регистра — можно."""
+    return (" " not in alias and is_natural_word(alias)
+            and alias.casefold() != str(canonical).casefold())
+
+
+def _absorb_tail(text: str, end: int, canonical: str, before: str) -> int:
+    """Конец совпадения вместе с хвостом канона, если он уже стоит следом («Romashka» + « 24»)."""
+    tail = _TAIL.search(canonical)
+    if tail is None or tail.start() == 0 or before.casefold().endswith(tail.group(1).casefold()):
+        return end
+    follow = re.match(rf"[ \t-]*{re.escape(tail.group(1))}(?![\w])", text[end:], flags=re.IGNORECASE)
+    return end + follow.end() if follow else end
 
 
 def find_matches(text: str, entries: Iterable[GlossaryEntry]) -> list[tuple[int, int, GlossaryEntry, str]]:
@@ -37,10 +60,11 @@ def find_matches(text: str, entries: Iterable[GlossaryEntry]) -> list[tuple[int,
         flags = 0 if entry.case_sensitive else re.IGNORECASE
         for alias in entry.aliases:
             alias = str(alias).strip()
-            if not alias:
+            if not alias or _common_word(alias, entry.canonical):
                 continue
             for match in re.finditer(_pattern(alias), text, flags=flags):
-                found.append((match.start(), match.end(), entry, match.group(0)))
+                end = _absorb_tail(text, match.end(), entry.canonical, match.group(0))
+                found.append((match.start(), end, entry, text[match.start():end]))
     selected: list[tuple[int, int, GlossaryEntry, str]] = []
     for candidate in sorted(found, key=lambda item: (-(item[1] - item[0]), item[0])):
         if any(candidate[0] < kept[1] and candidate[1] > kept[0] for kept in selected):
